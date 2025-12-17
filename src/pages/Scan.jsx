@@ -1,33 +1,52 @@
-import { useState } from "react";
-import { QrReader } from "react-qr-reader";
+import { useEffect, useRef, useState } from "react";
+import { Html5QrcodeScanner } from "html5-qrcode";
 import { supabase } from "../services/supabase";
 import { CheckCircle, XCircle } from "lucide-react";
 
 export default function Scan() {
+  const scannerRef = useRef(null);
   const [success, setSuccess] = useState(null);
   const [error, setError] = useState(null);
 
-  const handleScan = async (code) => {
+  useEffect(() => {
+    if (scannerRef.current) return;
+
+    const scanner = new Html5QrcodeScanner(
+      "qr-reader",
+      {
+        fps: 10,
+        qrbox: { width: 250, height: 250 }
+      },
+      false
+    );
+
+    scanner.render(onScanSuccess, onScanError);
+    scannerRef.current = scanner;
+
+    return () => {
+      scanner.clear().catch(() => {});
+    };
+  }, []);
+
+  const onScanSuccess = async (code) => {
     try {
       setError(null);
 
       const today = new Date().toISOString().slice(0, 10);
       const now = new Date();
-      const time = now.toTimeString().slice(0, 8); // HH:MM:SS
+      const time = now.toTimeString().slice(0, 8);
 
-      // 1️⃣ Récupérer employé
-      const { data: emp, error: empError } = await supabase
+      const { data: emp } = await supabase
         .from("employees")
         .select("*")
         .eq("qr_code", code)
         .single();
 
-      if (empError || !emp) {
+      if (!emp) {
         setError("Employé introuvable");
         return;
       }
 
-      // 2️⃣ Vérifier pointage du jour
       const { data: attendance } = await supabase
         .from("attendance")
         .select("*")
@@ -35,10 +54,9 @@ export default function Scan() {
         .eq("date", today)
         .single();
 
-      // 🟢 CAS 1 — PREMIER SCAN → CHECK-IN
+      // CHECK-IN
       if (!attendance) {
         const hour = now.getHours() + now.getMinutes() / 60;
-
         let status = "present";
         if (hour > 9) status = "absent";
         else if (hour > 8.5) status = "late";
@@ -51,23 +69,20 @@ export default function Scan() {
           recorded_by: "RH"
         });
 
-        setSuccess({
-          emp,
-          message: "Entrée enregistrée"
-        });
+        setSuccess({ emp, message: "Entrée enregistrée" });
       }
 
-      // 🟡 CAS 2 — CHECK-IN EXISTE → CHECK-OUT
+      // CHECK-OUT
       else if (!attendance.check_out) {
-        const checkInHour =
+        const hIn =
           parseInt(attendance.check_in.split(":")[0]) +
           parseInt(attendance.check_in.split(":")[1]) / 60;
 
-        const checkOutHour =
+        const hOut =
           now.getHours() + now.getMinutes() / 60;
 
-        const hoursWorked = Math.max(0, checkOutHour - checkInHour);
-        const overtime = checkOutHour > 18 ? checkOutHour - 18 : 0;
+        const hoursWorked = Math.max(0, hOut - hIn);
+        const overtime = hOut > 18 ? hOut - 18 : 0;
 
         await supabase
           .from("attendance")
@@ -78,35 +93,25 @@ export default function Scan() {
           })
           .eq("id", attendance.id);
 
-        setSuccess({
-          emp,
-          message: "Sortie enregistrée"
-        });
-      }
-
-      // 🔴 CAS 3 — DÉJÀ COMPLET
-      else {
-        setError("Pointage déjà complété pour aujourd'hui");
-        return;
+        setSuccess({ emp, message: "Sortie enregistrée" });
+      } else {
+        setError("Pointage déjà complété aujourd'hui");
       }
 
       setTimeout(() => setSuccess(null), 3000);
     } catch (e) {
-      setError("Erreur système");
       console.error(e);
+      setError("Erreur système");
     }
   };
+
+  const onScanError = () => {};
 
   return (
     <div>
       <h1 className="text-xl font-bold mb-4">Scanner QR</h1>
 
-      {!success && (
-        <QrReader
-          onResult={(res) => res && handleScan(res.text)}
-          constraints={{ facingMode: "environment" }}
-        />
-      )}
+      <div id="qr-reader" className="max-w-md mx-auto" />
 
       {success && (
         <div className="text-center mt-6 animate-pulse">

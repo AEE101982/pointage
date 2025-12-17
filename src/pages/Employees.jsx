@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../services/supabase";
-import QRCode from "qrcode.react";
+import { QRCodeCanvas } from "qrcode.react";
 
 export default function Employees() {
   const [list, setList] = useState([]);
@@ -20,7 +20,7 @@ export default function Employees() {
           <div key={e.id} className="bg-white p-4 rounded-xl shadow">
             <p className="font-bold">{e.first_name} {e.last_name}</p>
             <p className="text-sm">{e.department}</p>
-            <QRCode value={e.qr_code} size={100} />
+            <QRCodeCanvas value={e.qr_code} size={100} />
           </div>
         ))}
       </div>
