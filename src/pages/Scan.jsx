@@ -1,16 +1,29 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../services/supabase'
-import { Camera, QrCode as QrCodeIcon, Clock, User } from 'lucide-react'
+import { Camera, QrCode as QrCodeIcon, Clock, User, X } from 'lucide-react'
 
 export default function Scan() {
-  const [scanning, setScanning] = useState(false)
   const [manualCode, setManualCode] = useState('')
   const [result, setResult] = useState(null)
   const [todayAttendance, setTodayAttendance] = useState([])
-  const [cameraError, setCameraError] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [stream, setStream] = useState(null)
+  const videoRef = useRef(null)
+  const canvasRef = useRef(null)
+  const scanIntervalRef = useRef(null)
 
   useEffect(() => {
     loadTodayAttendance()
+    
+    // Importer dynamiquement jsQR
+    const script = document.createElement('script')
+    script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
+    document.body.appendChild(script)
+
+    return () => {
+      stopCamera()
+      document.body.removeChild(script)
+    }
   }, [])
 
   const loadTodayAttendance = async () => {
@@ -28,9 +41,93 @@ export default function Scan() {
     }
   }
 
+  const playSound = (type) => {
+    const context = new (window.AudioContext || window.webkitAudioContext)()
+    const oscillator = context.createOscillator()
+    const gainNode = context.createGain()
+
+    oscillator.connect(gainNode)
+    gainNode.connect(context.destination)
+
+    if (type === 'success') {
+      oscillator.frequency.setValueAtTime(523.25, context.currentTime)
+      oscillator.frequency.setValueAtTime(659.25, context.currentTime + 0.1)
+      oscillator.frequency.setValueAtTime(783.99, context.currentTime + 0.2)
+      gainNode.gain.setValueAtTime(0.3, context.currentTime)
+      gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.5)
+      oscillator.start(context.currentTime)
+      oscillator.stop(context.currentTime + 0.5)
+    } else {
+      oscillator.frequency.setValueAtTime(400, context.currentTime)
+      oscillator.frequency.setValueAtTime(300, context.currentTime + 0.1)
+      oscillator.frequency.setValueAtTime(200, context.currentTime + 0.2)
+      gainNode.gain.setValueAtTime(0.3, context.currentTime)
+      gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.4)
+      oscillator.start(context.currentTime)
+      oscillator.stop(context.currentTime + 0.4)
+    }
+  }
+
+  const startCamera = async () => {
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' }
+      })
+      
+      setStream(mediaStream)
+      setScanning(true)
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream
+        videoRef.current.play()
+        
+        // Démarrer le scan
+        scanIntervalRef.current = setInterval(scanQRCode, 500)
+      }
+    } catch (error) {
+      console.error('Erreur caméra:', error)
+      alert('Impossible d\'accéder à la caméra. Vérifiez les permissions.')
+    }
+  }
+
+  const stopCamera = () => {
+    if (scanIntervalRef.current) {
+      clearInterval(scanIntervalRef.current)
+      scanIntervalRef.current = null
+    }
+    
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop())
+      setStream(null)
+    }
+    
+    setScanning(false)
+  }
+
+  const scanQRCode = () => {
+    if (!videoRef.current || !canvasRef.current || !window.jsQR) return
+
+    const video = videoRef.current
+    const canvas = canvasRef.current
+    const ctx = canvas.getContext('2d')
+
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      const code = window.jsQR(imageData.data, imageData.width, imageData.height)
+
+      if (code) {
+        stopCamera()
+        handleScan(code.data)
+      }
+    }
+  }
+
   const handleScan = async (qrCode) => {
     try {
-      // Trouver l'employé
       const { data: employee, error: empError } = await supabase
         .from('employees')
         .select('*')
@@ -38,6 +135,7 @@ export default function Scan() {
         .single()
 
       if (empError || !employee) {
+        playSound('error')
         setResult({
           success: false,
           message: 'QR Code non reconnu',
@@ -46,7 +144,6 @@ export default function Scan() {
         return
       }
 
-      // Vérifier si déjà pointé aujourd'hui
       const today = new Date().toISOString().split('T')[0]
       const { data: existing } = await supabase
         .from('attendance')
@@ -56,13 +153,13 @@ export default function Scan() {
         .single()
 
       const now = new Date()
-      const currentTime = now.toTimeString().split(' ')[0].substring(0, 5) // HH:MM
+      const currentTime = now.toTimeString().split(' ')[0].substring(0, 5)
       const hour = parseInt(currentTime.split(':')[0])
       const minute = parseInt(currentTime.split(':')[1])
 
       if (existing) {
-        // Déjà pointé - enregistrer l'heure de sortie
         if (existing.check_out) {
+          playSound('error')
           setResult({
             success: false,
             message: 'Déjà pointé',
@@ -71,7 +168,6 @@ export default function Scan() {
             time: existing.check_out
           })
         } else {
-          // Calculer les heures travaillées
           const checkInParts = existing.check_in.split(':')
           const checkInHour = parseInt(checkInParts[0])
           const checkInMinute = parseInt(checkInParts[1])
@@ -81,7 +177,6 @@ export default function Scan() {
           const workedMinutes = checkOutMinutes - checkInMinutes
           const hoursWorked = workedMinutes / 60
 
-          // Calculer les heures supplémentaires (après 18h)
           let overtimeHours = 0
           if (hour >= 18) {
             const overtimeMinutes = checkOutMinutes - (18 * 60)
@@ -97,6 +192,7 @@ export default function Scan() {
             })
             .eq('id', existing.id)
 
+          playSound('success')
           setResult({
             success: true,
             type: 'checkout',
@@ -107,31 +203,22 @@ export default function Scan() {
           })
         }
       } else {
-        // Première pointage - Déterminer le statut
         let status = 'present'
         let statusMessage = '✅ À l\'heure'
 
-        // Logique de statut basée sur l'heure d'arrivée
-        if (hour < 8 || (hour === 8 && minute < 30)) {
-          // Arrivée avant 8h30 (trop tôt mais présent)
-          status = 'present'
-          statusMessage = '✅ En avance'
-        } else if ((hour === 8 && minute >= 30) || (hour === 9 && minute === 0)) {
-          // Entre 8h30 et 9h00 : À l'heure
+        if (hour < 8 || (hour === 8 && minute < 35)) {
           status = 'present'
           statusMessage = '✅ À l\'heure'
-        } else if (hour === 9 && minute > 0 && minute <= 15) {
-          // Entre 9h01 et 9h15 : Léger retard (tolérance)
+        } else {
           status = 'late'
-          statusMessage = '⏰ Retard (tolérance)'
-        } else if (hour === 9 && minute > 15) {
-          // Après 9h15 dans la même heure
-          status = 'late'
-          statusMessage = '⚠️ Retard'
-        } else if (hour >= 10) {
-          // Arrivée après 10h : Retard important
-          status = 'late'
-          statusMessage = '⚠️ Retard important'
+          if (hour === 8 && minute >= 35) {
+            statusMessage = '⚠️ Retard (+' + (minute - 30) + ' min)'
+          } else if (hour === 9) {
+            statusMessage = '⚠️ Retard (+' + (30 + minute) + ' min)'
+          } else if (hour >= 10) {
+            const totalMinutes = (hour - 8) * 60 + minute - 30
+            statusMessage = '⚠️ Retard important (+' + totalMinutes + ' min)'
+          }
         }
 
         await supabase
@@ -143,6 +230,7 @@ export default function Scan() {
             status: status
           }])
 
+        playSound('success')
         const greeting = hour < 12 ? 'Bonjour' : 'Bon après-midi'
 
         setResult({
@@ -159,6 +247,7 @@ export default function Scan() {
       loadTodayAttendance()
     } catch (error) {
       console.error('Erreur pointage:', error)
+      playSound('error')
       setResult({
         success: false,
         message: 'Erreur lors du pointage',
@@ -176,12 +265,10 @@ export default function Scan() {
 
   const resetScan = () => {
     setResult(null)
-    setCameraError(false)
   }
 
   return (
     <div className="space-y-6 pb-20">
-      {/* Header */}
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Scanner QR Code</h1>
         <p className="mt-2 text-sm text-gray-700">
@@ -189,7 +276,6 @@ export default function Scan() {
         </p>
       </div>
 
-      {/* ✅ ÉCRAN DE CONFIRMATION PLEIN ÉCRAN */}
       {result ? (
         <div className={`fixed inset-0 z-50 flex items-center justify-center p-4 ${
           result.success 
@@ -197,7 +283,6 @@ export default function Scan() {
             : 'bg-gradient-to-br from-red-500 to-rose-600'
         }`}>
           <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden">
-            {/* Photo de profil */}
             {result.employee && (
               <div className="relative h-64 bg-gradient-to-br from-indigo-100 to-purple-100 flex items-center justify-center">
                 {result.employee.photo_url ? (
@@ -214,7 +299,6 @@ export default function Scan() {
               </div>
             )}
 
-            {/* Contenu */}
             <div className="p-8">
               {result.success ? (
                 <>
@@ -229,7 +313,6 @@ export default function Scan() {
                     )}
                   </div>
 
-                  {/* Informations */}
                   <div className="space-y-4 bg-gray-50 rounded-2xl p-6">
                     <div className="flex justify-between items-center">
                       <span className="text-gray-600 font-medium">Heure</span>
@@ -289,7 +372,6 @@ export default function Scan() {
                 </div>
               )}
 
-              {/* Bouton OK */}
               <button
                 onClick={resetScan}
                 className={`w-full mt-6 py-4 rounded-xl font-bold text-white shadow-lg transition transform hover:scale-105 ${
@@ -305,41 +387,76 @@ export default function Scan() {
         </div>
       ) : (
         <>
-          {/* Zone de scan */}
           <div className="bg-white rounded-2xl shadow-lg p-6">
             <div className="max-w-md mx-auto space-y-4">
-              {/* Saisie manuelle */}
-              <div className="border-2 border-dashed border-indigo-300 rounded-xl p-6 bg-indigo-50/50">
-                <div className="flex items-center justify-center mb-4">
-                  <QrCodeIcon className="w-12 h-12 text-indigo-400" />
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={manualCode}
-                    onChange={(e) => setManualCode(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleManualScan()}
-                    placeholder="Code QR (ex: EMP0001)"
-                    className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                  />
+              {!scanning ? (
+                <>
+                  {/* Saisie manuelle */}
+                  <div className="border-2 border-dashed border-indigo-300 rounded-xl p-6 bg-indigo-50/50">
+                    <div className="flex items-center justify-center mb-4">
+                      <QrCodeIcon className="w-12 h-12 text-indigo-400" />
+                    </div>
+                    <p className="text-center text-sm text-gray-700 mb-4">
+                      Saisissez le code employé
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={manualCode}
+                        onChange={(e) => setManualCode(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && handleManualScan()}
+                        placeholder="Code (ex: EMP0001)"
+                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-lg font-mono"
+                        autoFocus
+                      />
+                      <button
+                        onClick={handleManualScan}
+                        className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium"
+                      >
+                        OK
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Bouton caméra */}
                   <button
-                    onClick={handleManualScan}
-                    className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium"
+                    onClick={startCamera}
+                    className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-xl font-semibold hover:from-purple-700 hover:to-indigo-700 transition flex items-center justify-center gap-2 shadow-lg"
                   >
-                    OK
+                    <Camera className="w-5 h-5" />
+                    Scanner avec la caméra
                   </button>
-                </div>
-              </div>
+                </>
+              ) : (
+                <>
+                  {/* Vue caméra */}
+                  <div className="relative">
+                    <video
+                      ref={videoRef}
+                      className="w-full rounded-lg"
+                      playsInline
+                    />
+                    <canvas ref={canvasRef} className="hidden" />
+                    
+                    {/* Overlay de visée */}
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className="w-64 h-64 border-4 border-white rounded-lg shadow-lg"></div>
+                    </div>
 
-              {cameraError && (
-                <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-                  ⚠️ Impossible d'accéder à la caméra. Utilisez la saisie manuelle ci-dessus.
-                </div>
+                    {/* Bouton fermer */}
+                    <button
+                      onClick={stopCamera}
+                      className="absolute top-4 right-4 p-2 bg-red-600 text-white rounded-full hover:bg-red-700 transition shadow-lg"
+                    >
+                      <X className="w-6 h-6" />
+                    </button>
+                  </div>
+
+                  <p className="text-center text-sm text-gray-600">
+                    📷 Positionnez le QR code dans le cadre
+                  </p>
+                </>
               )}
-
-              <p className="text-xs text-center text-gray-500">
-                💡 Astuce : Vous pouvez aussi utiliser un lecteur de code-barres externe
-              </p>
             </div>
           </div>
 
