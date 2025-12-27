@@ -14,10 +14,9 @@ export default function Scan() {
   const scanIntervalRef = useRef(null)
   const streamRef = useRef(null)
 
-  // Fonction pour ajouter des logs visibles
   const addLog = (message, type = 'info') => {
     console.log(message)
-    setDebugLogs(prev => [...prev.slice(-4), { message, type, time: new Date().toLocaleTimeString() }])
+    setDebugLogs(prev => [...prev.slice(-5), { message, type, time: new Date().toLocaleTimeString() }])
   }
 
   useEffect(() => {
@@ -38,7 +37,6 @@ export default function Scan() {
     const script = document.createElement('script')
     script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
     script.onload = () => addLog('✅ jsQR chargé', 'success')
-    script.onerror = () => addLog('❌ Erreur chargement jsQR', 'error')
     document.body.appendChild(script)
   }
 
@@ -64,17 +62,15 @@ export default function Scan() {
     try {
       addLog('📷 Demande accès caméra...', 'info')
       
-      // Arrêter le stream précédent
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop())
       }
 
-      // Configuration simplifiée pour mobile
       const constraints = {
         video: {
-          facingMode: 'environment', // Caméra arrière
-          width: { ideal: 1920, max: 1920 },
-          height: { ideal: 1080, max: 1080 }
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         },
         audio: false
       }
@@ -87,35 +83,55 @@ export default function Scan() {
       addLog(`📹 Résolution: ${settings.width}x${settings.height}`, 'info')
       
       streamRef.current = mediaStream
-      setScanning(true)
       
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream
         
-        // Événement: métadonnées chargées
-        videoRef.current.onloadedmetadata = () => {
-          addLog('📊 Métadonnées chargées', 'info')
-          addLog(`Vidéo: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`, 'info')
+        // ✅ FORCER le démarrage sans attendre les métadonnées
+        addLog('🎬 Démarrage forcé de la vidéo...', 'info')
+        
+        // Essayer de lire immédiatement
+        try {
+          await videoRef.current.play()
+          addLog('▶️ Lecture vidéo démarrée!', 'success')
+          setScanning(true)
           
-          // Démarrer la lecture
-          videoRef.current.play()
-            .then(() => {
-              addLog('▶️ Lecture vidéo OK', 'success')
-              // Attendre un peu avant de scanner
+          // Attendre 1 seconde puis démarrer le scan
+          setTimeout(() => {
+            if (videoRef.current && videoRef.current.videoWidth > 0) {
+              addLog(`📊 Vidéo prête: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`, 'success')
+              scanIntervalRef.current = setInterval(scanQRCode, 300)
+              addLog('🔍 Scan QR démarré', 'success')
+            } else {
+              addLog('⚠️ Vidéo pas encore prête, nouvelle tentative...', 'warning')
+              // Réessayer après 1 seconde
               setTimeout(() => {
-                scanIntervalRef.current = setInterval(scanQRCode, 300)
-                addLog('🔍 Scan QR démarré', 'success')
+                if (videoRef.current && videoRef.current.videoWidth > 0) {
+                  addLog(`📊 Vidéo prête: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`, 'success')
+                  scanIntervalRef.current = setInterval(scanQRCode, 300)
+                  addLog('🔍 Scan QR démarré', 'success')
+                } else {
+                  addLog('❌ Impossible d\'obtenir les dimensions vidéo', 'error')
+                }
               }, 1000)
-            })
-            .catch(err => {
-              addLog(`❌ Erreur lecture: ${err.message}`, 'error')
-              setCameraError('Impossible de démarrer la vidéo')
-            })
+            }
+          }, 1000)
+          
+        } catch (playError) {
+          addLog(`❌ Erreur play(): ${playError.message}`, 'error')
         }
-
-        // Événement: erreur vidéo
+        
+        // Listeners supplémentaires pour débogage
+        videoRef.current.onloadeddata = () => {
+          addLog('📥 loadeddata événement', 'info')
+        }
+        
+        videoRef.current.oncanplay = () => {
+          addLog('🎥 canplay événement', 'info')
+        }
+        
         videoRef.current.onerror = (e) => {
-          addLog(`❌ Erreur vidéo: ${e.message}`, 'error')
+          addLog(`❌ Erreur vidéo: ${e}`, 'error')
         }
       }
     } catch (error) {
@@ -124,11 +140,11 @@ export default function Scan() {
       let errorMessage = 'Impossible d\'accéder à la caméra'
       
       if (error.name === 'NotAllowedError') {
-        errorMessage = 'Permission refusée. Autorisez l\'accès à la caméra dans les paramètres.'
+        errorMessage = 'Permission refusée. Autorisez l\'accès dans les paramètres.'
       } else if (error.name === 'NotFoundError') {
-        errorMessage = 'Aucune caméra trouvée sur cet appareil'
+        errorMessage = 'Aucune caméra trouvée'
       } else if (error.name === 'NotReadableError') {
-        errorMessage = 'Caméra utilisée par une autre application'
+        errorMessage = 'Caméra déjà utilisée'
       }
       
       setCameraError(errorMessage)
@@ -165,13 +181,11 @@ export default function Scan() {
     const video = videoRef.current
     const canvas = canvasRef.current
 
-    // Vérifier que la vidéo est prête
-    if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+    if (video.readyState < 2) { // HAVE_CURRENT_DATA
       return
     }
 
     if (video.videoWidth === 0 || video.videoHeight === 0) {
-      addLog('⚠️ Dimensions vidéo = 0', 'warning')
       return
     }
 
@@ -231,7 +245,7 @@ export default function Scan() {
           setResult({
             success: false,
             message: 'Déjà pointé',
-            subtitle: `${employee.first_name} ${employee.last_name} a déjà pointé sa sortie aujourd'hui`,
+            subtitle: `${employee.first_name} ${employee.last_name} a déjà pointé sa sortie`,
             employee,
             time: existing.check_out
           })
@@ -343,16 +357,12 @@ export default function Scan() {
 
       if (type === 'success') {
         oscillator.frequency.setValueAtTime(523.25, context.currentTime)
-        oscillator.frequency.setValueAtTime(659.25, context.currentTime + 0.1)
-        oscillator.frequency.setValueAtTime(783.99, context.currentTime + 0.2)
         gainNode.gain.setValueAtTime(0.3, context.currentTime)
         gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.5)
         oscillator.start(context.currentTime)
         oscillator.stop(context.currentTime + 0.5)
       } else {
         oscillator.frequency.setValueAtTime(400, context.currentTime)
-        oscillator.frequency.setValueAtTime(300, context.currentTime + 0.1)
-        oscillator.frequency.setValueAtTime(200, context.currentTime + 0.2)
         gainNode.gain.setValueAtTime(0.3, context.currentTime)
         gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.4)
         oscillator.start(context.currentTime)
@@ -372,7 +382,7 @@ export default function Scan() {
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Scanner QR Code</h1>
         <p className="mt-2 text-sm text-gray-700">
-          Pointage des employés à l'arrivée et au départ
+          Pointage des employés
         </p>
       </div>
 
@@ -474,10 +484,10 @@ export default function Scan() {
 
               <button
                 onClick={resetScan}
-                className={`w-full mt-6 py-4 rounded-xl font-bold text-white shadow-lg transition transform hover:scale-105 ${
+                className={`w-full mt-6 py-4 rounded-xl font-bold text-white shadow-lg transition ${
                   result.success 
-                    ? 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700' 
-                    : 'bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700'
+                    ? 'bg-gradient-to-r from-green-600 to-emerald-600' 
+                    : 'bg-gradient-to-r from-red-600 to-rose-600'
                 }`}
               >
                 OK - Scanner un autre
@@ -491,13 +501,12 @@ export default function Scan() {
             <div className="max-w-md mx-auto space-y-4">
               {!scanning ? (
                 <>
-                  {/* Saisie manuelle */}
                   <div className="border-2 border-dashed border-indigo-300 rounded-xl p-6 bg-indigo-50/50">
                     <div className="flex items-center justify-center mb-4">
                       <QrCodeIcon className="w-12 h-12 text-indigo-400" />
                     </div>
                     <p className="text-center text-sm text-gray-700 mb-4">
-                      Saisissez le code employé
+                      Code employé
                     </p>
                     <div className="flex gap-2">
                       <input
@@ -505,31 +514,29 @@ export default function Scan() {
                         value={manualCode}
                         onChange={(e) => setManualCode(e.target.value)}
                         onKeyPress={(e) => e.key === 'Enter' && handleManualScan()}
-                        placeholder="Code (ex: EMP0001)"
-                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 text-lg font-mono"
-                        autoFocus
+                        placeholder="EMP0001"
+                        className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 font-mono"
                       />
                       <button
                         onClick={handleManualScan}
                         disabled={!manualCode.trim()}
-                        className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
                       >
                         OK
                       </button>
                     </div>
                   </div>
 
-                  {/* Bouton caméra */}
                   <button
                     onClick={startCamera}
-                    className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-xl font-semibold hover:from-purple-700 hover:to-indigo-700 transition flex items-center justify-center gap-2 shadow-lg"
+                    className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-xl font-semibold flex items-center justify-center gap-2"
                   >
                     <Camera className="w-5 h-5" />
                     Scanner avec la caméra
                   </button>
 
                   {cameraError && (
-                    <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex gap-2">
                       <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
                       <p className="text-red-700 text-sm">{cameraError}</p>
                     </div>
@@ -537,14 +544,13 @@ export default function Scan() {
                 </>
               ) : (
                 <>
-                  {/* Vue caméra */}
-                  <div className="relative bg-black rounded-lg overflow-hidden">
+                  <div className="relative rounded-lg overflow-hidden" style={{ backgroundColor: '#000' }}>
                     <video
                       ref={videoRef}
-                      className="w-full h-auto"
+                      className="w-full"
                       style={{ 
-                        objectFit: 'cover',
-                        aspectRatio: '16/9'
+                        display: 'block',
+                        maxHeight: '70vh'
                       }}
                       playsInline
                       muted
@@ -552,21 +558,18 @@ export default function Scan() {
                     />
                     <canvas ref={canvasRef} className="hidden" />
                     
-                    {/* Overlay de visée */}
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <div className="w-64 h-64 border-4 border-white rounded-lg shadow-2xl"></div>
+                      <div className="w-64 h-64 border-4 border-white rounded-lg"></div>
                     </div>
 
-                    {/* Bouton fermer */}
                     <button
                       onClick={stopCamera}
-                      className="absolute top-4 right-4 p-3 bg-red-600 text-white rounded-full hover:bg-red-700 transition shadow-lg z-10"
+                      className="absolute top-4 right-4 p-3 bg-red-600 text-white rounded-full shadow-lg z-10"
                     >
                       <X className="w-6 h-6" />
                     </button>
 
-                    {/* Logs de débogage */}
-                    <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-75 p-3 space-y-1">
+                    <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-80 p-3 space-y-1 max-h-32 overflow-y-auto">
                       {debugLogs.map((log, idx) => (
                         <div key={idx} className={`text-xs font-mono ${
                           log.type === 'error' ? 'text-red-400' :
@@ -581,14 +584,13 @@ export default function Scan() {
                   </div>
 
                   <p className="text-center text-sm text-gray-600">
-                    📷 Positionnez le QR code dans le cadre blanc
+                    📷 Positionnez le QR code dans le cadre
                   </p>
                 </>
               )}
             </div>
           </div>
 
-          {/* Présents aujourd'hui */}
           <div className="bg-white rounded-xl shadow-lg p-6">
             <div className="flex items-center gap-3 mb-4">
               <Clock className="w-6 h-6 text-indigo-600" />
@@ -598,7 +600,7 @@ export default function Scan() {
             </div>
 
             {todayAttendance.length === 0 ? (
-              <p className="text-center text-gray-500 py-8">Aucun pointage aujourd'hui</p>
+              <p className="text-center text-gray-500 py-8">Aucun pointage</p>
             ) : (
               <div className="space-y-3">
                 {todayAttendance.map((record) => (
