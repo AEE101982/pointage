@@ -10,10 +10,9 @@ import Layout from "./components/layout/Layout";
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter>  {/* ✅ Changé de HashRouter à BrowserRouter */}
       <Routes>
         <Route path="/login" element={<Login />} />
-
         <Route element={<ProtectedRoute />}>
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
@@ -24,9 +23,8 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Route>
-
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
-    </HashRouter>
+    </BrowserRouter>
   );
 }
