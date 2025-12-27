@@ -1,26 +1,8 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
 import { Camera, QrCode as QrCodeIcon, Clock, User, X, AlertTriangle } from 'lucide-react'
-
-// Import conditionnel de Capacitor (seulement si disponible)
-let BarcodeScanner = null
-let Capacitor = null
-let isNative = false
-
-try {
-  // Ces imports ne fonctionneront que si les packages sont installés (mobile)
-  const capacitorModule = await import('@capacitor/core')
-  Capacitor = capacitorModule.Capacitor
-  isNative = Capacitor.isNativePlatform()
-  
-  if (isNative) {
-    const scannerModule = await import('@capacitor-community/barcode-scanner')
-    BarcodeScanner = scannerModule.BarcodeScanner
-  }
-} catch (error) {
-  // Pas de Capacitor = version web
-  console.log('📱 Mode Web (pas de Capacitor)')
-}
+import { BarcodeScanner } from '@capacitor-community/barcode-scanner'
+import { Capacitor } from '@capacitor/core'
 
 export default function Scan() {
   const [manualCode, setManualCode] = useState('')
@@ -28,19 +10,10 @@ export default function Scan() {
   const [todayAttendance, setTodayAttendance] = useState([])
   const [scanning, setScanning] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
-  const videoRef = useRef(null)
-  const canvasRef = useRef(null)
-  const scanIntervalRef = useRef(null)
+  const isNative = Capacitor.isNativePlatform()
 
   useEffect(() => {
     loadTodayAttendance()
-    
-    // ✅ Charger jsQR pour le mode web
-    if (!isNative && !window.jsQR) {
-      const script = document.createElement('script')
-      script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
-      document.body.appendChild(script)
-    }
     
     // ✅ ÉCOUTER LES CHANGEMENTS EN TEMPS RÉEL
     const today = new Date().toISOString().split('T')[0]
@@ -50,20 +23,24 @@ export default function Scan() {
       .on(
         'postgres_changes',
         {
-          event: '*',
+          event: '*', // INSERT, UPDATE, DELETE
           schema: 'public',
           table: 'attendance',
-          filter: `date=eq.${today}`
+          filter: `date=eq.${today}` // Seulement les pointages d'aujourd'hui
         },
         (payload) => {
           console.log('🔄 Changement détecté:', payload)
+          // Recharger la liste quand un changement est détecté
           loadTodayAttendance()
         }
       )
       .subscribe()
 
     return () => {
-      stopCamera()
+      if (scanning) {
+        stopScan()
+      }
+      // Se désabonner quand le composant est démonté
       supabase.removeChannel(channel)
     }
   }, [])
@@ -84,10 +61,7 @@ export default function Scan() {
     }
   }
 
-  // ========================================
-  // SCAN MOBILE (Capacitor)
-  // ========================================
-  const startScanMobile = async () => {
+  const startScan = async () => {
     setErrorMessage('')
     
     try {
@@ -97,6 +71,9 @@ export default function Scan() {
         console.log('✅ Permission caméra accordée')
       } else if (status.denied) {
         setErrorMessage('Permission caméra refusée. Veuillez autoriser l\'accès dans les paramètres de l\'application.')
+        return
+      } else if (status.restricted || status.unknown) {
+        setErrorMessage('Accès caméra non disponible sur cet appareil')
         return
       } else {
         const newStatus = await BarcodeScanner.checkPermission({ force: true })
@@ -113,11 +90,7 @@ export default function Scan() {
       setScanning(true)
 
       const result = await BarcodeScanner.startScan()
-      
-      BarcodeScanner.stopScan()
-      document.body.classList.remove('scanner-active')
-      document.querySelector('body')?.style.removeProperty('background')
-      setScanning(false)
+      stopScan()
 
       if (result.hasContent) {
         console.log('✅ QR Code scanné:', result.content)
@@ -127,138 +100,17 @@ export default function Scan() {
     } catch (error) {
       console.error('❌ Erreur scan:', error)
       setErrorMessage('Erreur lors du scan: ' + error.message)
-      setScanning(false)
+      stopScan()
     }
   }
 
-  // ========================================
-  // SCAN WEB (jsQR)
-  // ========================================
-  const startCameraWeb = async () => {
-    setErrorMessage('')
-    setScanning(true)
-    
-    await new Promise(resolve => setTimeout(resolve, 100))
-    
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('getUserMedia non supporté')
-      }
-
-      if (!videoRef.current) {
-        await new Promise(resolve => setTimeout(resolve, 200))
-        
-        if (!videoRef.current) {
-          throw new Error('Impossible de monter l\'élément vidéo')
-        }
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: 'environment',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: false
-      })
-
-      videoRef.current.srcObject = stream
-      
-      await new Promise(resolve => setTimeout(resolve, 300))
-      
-      try {
-        await videoRef.current.play()
-      } catch (playErr) {
-        await new Promise(resolve => setTimeout(resolve, 500))
-        await videoRef.current.play()
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      
-      if (videoRef.current.videoWidth === 0) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-      }
-      
-      if (videoRef.current.videoWidth > 0) {
-        scanIntervalRef.current = setInterval(scanQRCode, 300)
-      } else {
-        throw new Error('Impossible d\'obtenir les dimensions de la vidéo')
-      }
-      
-    } catch (error) {
-      console.error('Erreur caméra:', error)
-      
-      let userMsg = 'Impossible d\'accéder à la caméra'
-      
-      if (error.name === 'NotAllowedError') {
-        userMsg = 'Permission caméra refusée.\n\nAllez dans Paramètres > Safari/Chrome > Appareil photo et autorisez l\'accès pour ce site.'
-      } else if (error.name === 'NotFoundError') {
-        userMsg = 'Aucune caméra trouvée sur cet appareil.'
-      } else if (error.name === 'NotReadableError') {
-        userMsg = 'La caméra est déjà utilisée par une autre application.\n\nFermez les autres applications et réessayez.'
-      } else if (error.name === 'OverconstrainedError') {
-        userMsg = 'Caméra arrière non disponible.'
-      }
-      
-      setErrorMessage(userMsg)
-      setScanning(false)
-    }
-  }
-
-  const stopCamera = () => {
-    if (scanIntervalRef.current) {
-      clearInterval(scanIntervalRef.current)
-      scanIntervalRef.current = null
-    }
-    
-    if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(track => track.stop())
-      videoRef.current.srcObject = null
-    }
-    
+  const stopScan = () => {
+    BarcodeScanner.stopScan()
+    document.body.classList.remove('scanner-active')
+    document.querySelector('body')?.style.removeProperty('background')
     setScanning(false)
   }
 
-  const scanQRCode = () => {
-    if (!videoRef.current || !canvasRef.current || !window.jsQR) return
-
-    const video = videoRef.current
-    const canvas = canvasRef.current
-
-    if (video.readyState < 2) return
-    if (video.videoWidth === 0) return
-
-    try {
-      const ctx = canvas.getContext('2d')
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      
-      ctx.drawImage(video, 0, 0)
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-      
-      const code = window.jsQR(imageData.data, imageData.width, imageData.height)
-
-      if (code) {
-        stopCamera()
-        handleScan(code.data)
-      }
-    } catch (err) {
-      console.error('Erreur scan:', err)
-    }
-  }
-
-  // Fonction unique pour démarrer le scan (mobile ou web)
-  const startScan = () => {
-    if (isNative && BarcodeScanner) {
-      startScanMobile()
-    } else {
-      startCameraWeb()
-    }
-  }
-
-  // ========================================
-  // LOGIQUE MÉTIER (commune)
-  // ========================================
   const calculateStatus = (hour, minute) => {
     if (hour < 8 || (hour === 8 && minute <= 35)) {
       return { status: 'present', message: '✅ À l\'heure' }
@@ -447,6 +299,9 @@ export default function Scan() {
           })
         }
       }
+
+      // Les changements seront automatiquement détectés par la subscription
+      // Pas besoin d'appeler loadTodayAttendance() manuellement
       
     } catch (err) {
       console.error('Erreur:', err)
@@ -483,7 +338,6 @@ export default function Scan() {
         <h1 className="text-3xl font-bold text-gray-900">Scanner QR Code</h1>
         <p className="mt-2 text-sm text-gray-700">
           Horaires : 8h30-13h00 / 14h00-18h00
-          {isNative && <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">📱 Mode Mobile</span>}
         </p>
       </div>
 
@@ -585,7 +439,7 @@ export default function Scan() {
                     className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-xl font-semibold flex items-center justify-center gap-2 shadow-lg"
                   >
                     <Camera className="w-5 h-5" />
-                    Scanner avec la caméra
+                    {isNative ? 'Scanner avec la caméra' : 'Scanner avec la caméra (Web)'}
                   </button>
 
                   {errorMessage && (
@@ -600,40 +454,17 @@ export default function Scan() {
                     </div>
                   )}
                 </>
-              ) : isNative ? (
+              ) : (
                 <div className="text-center py-8">
                   <Camera className="w-16 h-16 text-indigo-600 mx-auto mb-4 animate-pulse" />
                   <p className="text-lg font-semibold text-gray-900 mb-2">Scan en cours...</p>
-                  <p className="text-sm text-gray-600">Pointez la caméra vers le QR code</p>
-                </div>
-              ) : (
-                <div className="relative bg-black rounded-lg overflow-hidden">
-                  <video
-                    ref={videoRef}
-                    className="w-full"
-                    style={{ minHeight: '400px', maxHeight: '70vh' }}
-                    playsInline
-                    muted
-                    autoPlay
-                  />
-                  <canvas ref={canvasRef} className="hidden" />
-                  
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div className="w-64 h-64 border-4 border-white rounded-lg shadow-2xl"></div>
-                  </div>
-
+                  <p className="text-sm text-gray-600 mb-4">Pointez la caméra vers le QR code</p>
                   <button
-                    onClick={stopCamera}
-                    className="absolute top-4 right-4 p-3 bg-red-600 text-white rounded-full shadow-lg z-10"
+                    onClick={stopScan}
+                    className="px-6 py-2 bg-red-600 text-white rounded-lg"
                   >
-                    <X className="w-6 h-6" />
+                    Annuler
                   </button>
-                  
-                  <div className="absolute bottom-4 left-0 right-0 px-4">
-                    <p className="text-center text-white text-sm bg-black bg-opacity-60 px-4 py-2 rounded-lg">
-                      📷 Positionnez le QR code dans le cadre blanc
-                    </p>
-                  </div>
                 </div>
               )}
             </div>
@@ -644,7 +475,7 @@ export default function Scan() {
               <Clock className="w-6 h-6 text-indigo-600" />
               <h2 className="text-xl font-bold">Présents aujourd'hui ({todayAttendance.length})</h2>
               <div className="ml-auto">
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" title="Synchronisation temps réel active"></div>
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
               </div>
             </div>
 
