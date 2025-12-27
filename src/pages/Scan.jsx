@@ -25,7 +25,6 @@ export default function Scan() {
       const script = document.createElement('script')
       script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
       script.onload = () => addStatus('✅ jsQR chargé')
-      script.onerror = () => addStatus('❌ Erreur jsQR', true)
       document.body.appendChild(script)
     }
     
@@ -52,12 +51,29 @@ export default function Scan() {
   const startCamera = async () => {
     setErrorMessage('')
     setStatusMessages([])
+    
+    // ✅ IMPORTANT: Activer le scanning AVANT de démarrer la caméra
+    // Cela crée l'élément <video> dans le DOM
+    setScanning(true)
+    
+    // Attendre que React monte l'élément video
+    await new Promise(resolve => setTimeout(resolve, 100))
+    
     addStatus('🎬 Demande accès caméra...')
     
     try {
-      // Vérifier si getUserMedia existe
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('getUserMedia non supporté sur ce navigateur')
+        throw new Error('getUserMedia non supporté')
+      }
+
+      // Vérifier que videoRef est maintenant disponible
+      if (!videoRef.current) {
+        addStatus('⚠️ Élément vidéo pas encore monté, attente...', true)
+        await new Promise(resolve => setTimeout(resolve, 200))
+        
+        if (!videoRef.current) {
+          throw new Error('Impossible de monter l\'élément vidéo')
+        }
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -72,41 +88,31 @@ export default function Scan() {
       addStatus('✅ Accès caméra OK')
       
       const tracks = stream.getVideoTracks()
-      if (tracks.length === 0) {
-        throw new Error('Aucune piste vidéo trouvée')
-      }
-      
       const settings = tracks[0].getSettings()
       addStatus(`📹 ${settings.width}x${settings.height}`)
-      
-      if (!videoRef.current) {
-        throw new Error('Élément vidéo non trouvé')
-      }
 
       videoRef.current.srcObject = stream
-      setScanning(true)
       
-      // Attendre un peu que le stream soit prêt
+      // Attendre un peu
       await new Promise(resolve => setTimeout(resolve, 300))
       
-      // Forcer le play
+      // Lancer la lecture
       try {
         await videoRef.current.play()
         addStatus('▶️ Lecture vidéo OK')
       } catch (playErr) {
-        addStatus('⚠️ Tentative autoplay: ' + playErr.message, true)
-        // Essayer de nouveau après un court délai
+        addStatus('⚠️ Erreur play, réessai...', true)
         await new Promise(resolve => setTimeout(resolve, 500))
         await videoRef.current.play()
         addStatus('▶️ Lecture OK (2ème essai)')
       }
       
-      // Attendre que la vidéo soit vraiment prête
+      // Attendre que la vidéo soit prête
       await new Promise(resolve => setTimeout(resolve, 1000))
       
-      // Vérifier les dimensions
+      // Vérifier dimensions
       if (videoRef.current.videoWidth === 0) {
-        addStatus('⚠️ Dimensions vidéo = 0, attente...', true)
+        addStatus('⚠️ Attente dimensions...', true)
         await new Promise(resolve => setTimeout(resolve, 1000))
       }
       
@@ -115,7 +121,7 @@ export default function Scan() {
         scanIntervalRef.current = setInterval(scanQRCode, 300)
         addStatus('🔍 Scan QR démarré')
       } else {
-        throw new Error('Impossible d\'obtenir les dimensions de la vidéo')
+        throw new Error('Dimensions vidéo = 0')
       }
       
     } catch (error) {
@@ -125,33 +131,28 @@ export default function Scan() {
       let userMsg = 'Erreur: ' + error.message
       
       if (error.name === 'NotAllowedError') {
-        userMsg = 'Permission caméra refusée. Allez dans Paramètres > Safari/Chrome > Appareil photo et autorisez l\'accès.'
+        userMsg = 'PERMISSION REFUSÉE\n\nAllez dans Paramètres de votre téléphone:\n• Paramètres > Safari/Chrome\n• Appareil photo\n• Autorisez l\'accès pour ce site'
       } else if (error.name === 'NotFoundError') {
-        userMsg = 'Aucune caméra trouvée sur cet appareil.'
+        userMsg = 'Aucune caméra trouvée sur cet appareil'
       } else if (error.name === 'NotReadableError') {
-        userMsg = 'La caméra est utilisée par une autre application. Fermez les autres apps.'
+        userMsg = 'Caméra déjà utilisée par une autre app.\n\nFermez les autres applications et réessayez.'
       } else if (error.name === 'OverconstrainedError') {
-        userMsg = 'Caméra arrière non disponible. Essayez avec la caméra frontale.'
+        userMsg = 'Caméra arrière non disponible'
       }
       
       setErrorMessage(userMsg)
-      stopCamera()
+      setScanning(false)
     }
   }
 
   const stopCamera = () => {
-    addStatus('🛑 Arrêt caméra')
-    
     if (scanIntervalRef.current) {
       clearInterval(scanIntervalRef.current)
       scanIntervalRef.current = null
     }
     
     if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(track => {
-        track.stop()
-        addStatus(`⏹️ Track ${track.kind} arrêté`)
-      })
+      videoRef.current.srcObject.getTracks().forEach(track => track.stop())
       videoRef.current.srcObject = null
     }
     
@@ -183,7 +184,7 @@ export default function Scan() {
         handleScan(code.data)
       }
     } catch (err) {
-      addStatus('❌ Erreur scan: ' + err.message, true)
+      console.error('Erreur scan:', err)
     }
   }
 
@@ -391,8 +392,8 @@ export default function Scan() {
                       <div className="flex items-start gap-3">
                         <AlertTriangle className="w-6 h-6 text-red-600 flex-shrink-0 mt-1" />
                         <div className="flex-1">
-                          <p className="font-bold text-red-900 mb-1">Erreur Caméra</p>
-                          <p className="text-sm text-red-700">{errorMessage}</p>
+                          <p className="font-bold text-red-900 mb-2">Erreur Caméra</p>
+                          <p className="text-sm text-red-700 whitespace-pre-line">{errorMessage}</p>
                         </div>
                       </div>
                     </div>
@@ -404,7 +405,7 @@ export default function Scan() {
                       <div className="space-y-1">
                         {statusMessages.map((msg, idx) => (
                           <p key={idx} className={`text-xs font-mono ${
-                            msg.isError ? 'text-red-600' : 'text-blue-700'
+                            msg.isError ? 'text-red-600 font-bold' : 'text-blue-700'
                           }`}>
                             {msg.text}
                           </p>
@@ -418,7 +419,7 @@ export default function Scan() {
                   <video
                     ref={videoRef}
                     className="w-full"
-                    style={{ minHeight: '300px' }}
+                    style={{ minHeight: '400px', maxHeight: '70vh' }}
                     playsInline
                     muted
                     autoPlay
@@ -437,10 +438,10 @@ export default function Scan() {
                   </button>
                   
                   {statusMessages.length > 0 && (
-                    <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-80 p-3">
-                      {statusMessages.slice(-3).map((msg, idx) => (
+                    <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-90 p-4">
+                      {statusMessages.slice(-4).map((msg, idx) => (
                         <p key={idx} className={`text-xs font-mono mb-1 ${
-                          msg.isError ? 'text-red-400' : 'text-green-400'
+                          msg.isError ? 'text-red-400 font-bold' : 'text-green-400'
                         }`}>
                           {msg.text}
                         </p>
