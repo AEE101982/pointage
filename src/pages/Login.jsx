@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuth } from "../contexts/AuthContext"
+import { useAuth } from '../contexts/AuthContext'
 import { Clock, Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react'
 
 export default function Login() {
@@ -29,7 +29,6 @@ export default function Login() {
       if (error) {
         setError('Email ou mot de passe incorrect')
       } else {
-        // Connexion réussie, rediriger vers le dashboard
         navigate('/')
       }
     } catch (err) {
@@ -80,7 +79,7 @@ export default function Login() {
                       required
                       autoComplete="email"
                       className="w-full pl-12 pr-4 py-3.5 border-2 border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 focus:outline-none transition"
-                      placeholder="admin@pointage.com"
+                      placeholder="Veuillez saisir votre adresse email"
                     />
                   </div>
                 </div>
@@ -135,31 +134,11 @@ export default function Login() {
                 </button>
               </div>
             </form>
-
-            {/* Info test */}
-            <div className="mt-6 p-4 bg-amber-50 border-2 border-amber-200 rounded-xl">
-              <div className="flex items-start gap-2">
-                <span className="text-xl flex-shrink-0">🔐</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-bold text-amber-900 mb-2">Identifiants de test :</p>
-                  <div className="space-y-1">
-                    <p className="text-sm text-amber-800">
-                      <span className="font-semibold">Email:</span>{' '}
-                      <span className="font-mono">admin@pointage.com</span>
-                    </p>
-                    <p className="text-sm text-amber-800">
-                      <span className="font-semibold">Mot de passe:</span>{' '}
-                      <span className="font-mono">Admin123!</span>
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
 
           {/* Footer */}
           <div className="px-8 pb-8 text-center">
-            <p className="text-xs text-gray-500">© 2025 Sahara Mobilier. Tous droits réservés.</p>
+            <p className="text-xs text-gray-500">© 2024 Pointage Pro. Tous droits réservés.</p>
           </div>
         </div>
       </div>
