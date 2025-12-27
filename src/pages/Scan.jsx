@@ -7,144 +7,120 @@ export default function Scan() {
   const [result, setResult] = useState(null)
   const [todayAttendance, setTodayAttendance] = useState([])
   const [scanning, setScanning] = useState(false)
-  const [stream, setStream] = useState(null)
-  const [error, setError] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [cameraError, setCameraError] = useState(null)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const scanIntervalRef = useRef(null)
+  const streamRef = useRef(null)
 
   useEffect(() => {
-    initComponent()
+    loadTodayAttendance()
+    loadJsQR()
     
     return () => {
-      cleanup()
+      stopCamera()
     }
   }, [])
 
-  const initComponent = async () => {
-    try {
-      setLoading(true)
-      setError(null)
-      
-      // Charger les présences
-      await loadTodayAttendance()
-      
-      // Charger jsQR
-      await loadJsQR()
-      
-      setLoading(false)
-    } catch (err) {
-      console.error('Erreur initialisation:', err)
-      setError(err.message)
-      setLoading(false)
-    }
-  }
-
   const loadJsQR = () => {
-    return new Promise((resolve, reject) => {
-      // Vérifier si jsQR est déjà chargé
-      if (window.jsQR) {
-        resolve()
-        return
-      }
-
-      const script = document.createElement('script')
-      script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
-      script.onload = () => resolve()
-      script.onerror = () => reject(new Error('Impossible de charger jsQR'))
-      document.body.appendChild(script)
-    })
-  }
-
-  const cleanup = () => {
-    stopCamera()
-    // Ne pas supprimer le script jsQR car il peut être utilisé par d'autres composants
+    if (window.jsQR) return
+    
+    const script = document.createElement('script')
+    script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
+    document.body.appendChild(script)
   }
 
   const loadTodayAttendance = async () => {
     try {
       const today = new Date().toISOString().split('T')[0]
-      const { data, error } = await supabase
+      const { data } = await supabase
         .from('attendance')
         .select('*, employees(first_name, last_name, department)')
         .eq('date', today)
         .order('created_at', { ascending: false })
 
-      if (error) throw error
-
       setTodayAttendance(data || [])
-    } catch (err) {
-      console.error('Erreur chargement présences:', err)
-      // Ne pas bloquer l'app si on ne peut pas charger les présences
-      setTodayAttendance([])
-    }
-  }
-
-  const playSound = (type) => {
-    try {
-      const context = new (window.AudioContext || window.webkitAudioContext)()
-      const oscillator = context.createOscillator()
-      const gainNode = context.createGain()
-
-      oscillator.connect(gainNode)
-      gainNode.connect(context.destination)
-
-      if (type === 'success') {
-        oscillator.frequency.setValueAtTime(523.25, context.currentTime)
-        oscillator.frequency.setValueAtTime(659.25, context.currentTime + 0.1)
-        oscillator.frequency.setValueAtTime(783.99, context.currentTime + 0.2)
-        gainNode.gain.setValueAtTime(0.3, context.currentTime)
-        gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.5)
-        oscillator.start(context.currentTime)
-        oscillator.stop(context.currentTime + 0.5)
-      } else {
-        oscillator.frequency.setValueAtTime(400, context.currentTime)
-        oscillator.frequency.setValueAtTime(300, context.currentTime + 0.1)
-        oscillator.frequency.setValueAtTime(200, context.currentTime + 0.2)
-        gainNode.gain.setValueAtTime(0.3, context.currentTime)
-        gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.4)
-        oscillator.start(context.currentTime)
-        oscillator.stop(context.currentTime + 0.4)
-      }
-    } catch (err) {
-      console.error('Erreur son:', err)
-      // Continuer sans son si erreur
+    } catch (error) {
+      console.error('Erreur chargement présences:', error)
     }
   }
 
   const startCamera = async () => {
+    setCameraError(null)
+    
     try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
-      })
+      console.log('📷 Demande d\'accès à la caméra...')
       
-      setStream(mediaStream)
+      // Arrêter le stream précédent s'il existe
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop())
+      }
+
+      // Configuration pour mobile
+      const constraints = {
+        video: {
+          facingMode: { ideal: 'environment' }, // Caméra arrière sur mobile
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      }
+
+      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints)
+      console.log('✅ Caméra accessible')
+      
+      streamRef.current = mediaStream
       setScanning(true)
       
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream
-        await videoRef.current.play()
         
-        // Démarrer le scan
-        scanIntervalRef.current = setInterval(scanQRCode, 500)
+        // Attendre que les métadonnées soient chargées avant de jouer
+        videoRef.current.onloadedmetadata = () => {
+          console.log('📹 Métadonnées vidéo chargées')
+          videoRef.current.play()
+            .then(() => {
+              console.log('▶️ Lecture vidéo démarrée')
+              // Démarrer le scan QR
+              scanIntervalRef.current = setInterval(scanQRCode, 500)
+            })
+            .catch(err => {
+              console.error('❌ Erreur lecture vidéo:', err)
+              setCameraError('Impossible de démarrer la vidéo')
+            })
+        }
       }
-    } catch (err) {
-      console.error('Erreur caméra:', err)
-      alert('Impossible d\'accéder à la caméra. Vérifiez les permissions.')
+    } catch (error) {
+      console.error('❌ Erreur caméra:', error)
+      let errorMessage = 'Impossible d\'accéder à la caméra'
+      
+      if (error.name === 'NotAllowedError') {
+        errorMessage = 'Vous devez autoriser l\'accès à la caméra'
+      } else if (error.name === 'NotFoundError') {
+        errorMessage = 'Aucune caméra trouvée sur cet appareil'
+      } else if (error.name === 'NotReadableError') {
+        errorMessage = 'La caméra est déjà utilisée par une autre application'
+      }
+      
+      setCameraError(errorMessage)
       stopCamera()
     }
   }
 
   const stopCamera = () => {
+    console.log('🛑 Arrêt de la caméra')
+    
     if (scanIntervalRef.current) {
       clearInterval(scanIntervalRef.current)
       scanIntervalRef.current = null
     }
     
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop())
-      setStream(null)
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        track.stop()
+        console.log('⏹️ Track arrêté:', track.kind)
+      })
+      streamRef.current = null
     }
     
     if (videoRef.current) {
@@ -152,6 +128,7 @@ export default function Scan() {
     }
     
     setScanning(false)
+    setCameraError(null)
   }
 
   const scanQRCode = () => {
@@ -159,20 +136,34 @@ export default function Scan() {
 
     const video = videoRef.current
     const canvas = canvasRef.current
-    const ctx = canvas.getContext('2d')
 
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    // Vérifier que la vidéo est prête
+    if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+      console.log('⏳ Vidéo pas encore prête')
+      return
+    }
 
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-      const code = window.jsQR(imageData.data, imageData.width, imageData.height)
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    
+    if (canvas.width === 0 || canvas.height === 0) {
+      console.log('⚠️ Dimensions vidéo invalides')
+      return
+    }
 
-      if (code) {
-        stopCamera()
-        handleScan(code.data)
-      }
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    
+    const code = window.jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: "dontInvert"
+    })
+
+    if (code) {
+      console.log('✅ QR Code détecté:', code.data)
+      stopCamera()
+      handleScan(code.data)
     }
   }
 
@@ -314,38 +305,39 @@ export default function Scan() {
     }
   }
 
+  const playSound = (type) => {
+    try {
+      const context = new (window.AudioContext || window.webkitAudioContext)()
+      const oscillator = context.createOscillator()
+      const gainNode = context.createGain()
+
+      oscillator.connect(gainNode)
+      gainNode.connect(context.destination)
+
+      if (type === 'success') {
+        oscillator.frequency.setValueAtTime(523.25, context.currentTime)
+        oscillator.frequency.setValueAtTime(659.25, context.currentTime + 0.1)
+        oscillator.frequency.setValueAtTime(783.99, context.currentTime + 0.2)
+        gainNode.gain.setValueAtTime(0.3, context.currentTime)
+        gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.5)
+        oscillator.start(context.currentTime)
+        oscillator.stop(context.currentTime + 0.5)
+      } else {
+        oscillator.frequency.setValueAtTime(400, context.currentTime)
+        oscillator.frequency.setValueAtTime(300, context.currentTime + 0.1)
+        oscillator.frequency.setValueAtTime(200, context.currentTime + 0.2)
+        gainNode.gain.setValueAtTime(0.3, context.currentTime)
+        gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.4)
+        oscillator.start(context.currentTime)
+        oscillator.stop(context.currentTime + 0.4)
+      }
+    } catch (err) {
+      console.error('Erreur son:', err)
+    }
+  }
+
   const resetScan = () => {
     setResult(null)
-  }
-
-  // Affichage du chargement
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Chargement...</p>
-        </div>
-      </div>
-    )
-  }
-
-  // Affichage des erreurs
-  if (error) {
-    return (
-      <div className="p-6">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <h3 className="text-red-800 font-semibold mb-2">Erreur</h3>
-          <p className="text-red-600">{error}</p>
-          <button
-            onClick={initComponent}
-            className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
-          >
-            Réessayer
-          </button>
-        </div>
-      </div>
-    )
   }
 
   return (
@@ -508,16 +500,23 @@ export default function Scan() {
                     <Camera className="w-5 h-5" />
                     Scanner avec la caméra
                   </button>
+
+                  {cameraError && (
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                      {cameraError}
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
                   {/* Vue caméra */}
-                  <div className="relative">
+                  <div className="relative bg-black rounded-lg overflow-hidden">
                     <video
                       ref={videoRef}
                       className="w-full rounded-lg"
                       playsInline
                       muted
+                      autoPlay
                     />
                     <canvas ref={canvasRef} className="hidden" />
                     
