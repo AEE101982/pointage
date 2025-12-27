@@ -20,10 +20,8 @@ export const AuthProvider = ({ children }) => {
         await fetchUserRole(session.user.email)
       } else {
         setRole(null)
+        setLoading(false)
       }
-      
-      console.log('🟢 Loading terminé (onAuthStateChange)')
-      setLoading(false)
     })
 
     return () => {
@@ -59,19 +57,26 @@ export const AuthProvider = ({ children }) => {
   }
 
   const fetchUserRole = async (email) => {
+    console.log('🔵 FetchUserRole: Début pour', email)
+    
     try {
-      console.log('🔵 FetchUserRole: Début pour', email)
+      // ✅ TIMEOUT de 3 secondes pour éviter le blocage infini
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Timeout')), 3000)
+      )
       
-      const { data, error } = await supabase
+      const fetchPromise = supabase
         .from('users')
         .select('role')
         .eq('email', email)
         .single()
       
+      const { data, error } = await Promise.race([fetchPromise, timeoutPromise])
+      
       if (error) {
-        console.error('⚠️ Erreur récupération rôle (NON BLOQUANT):', error)
-        // ✅ NE PAS BLOQUER - Continuer même sans rôle
-        setRole('user') // Rôle par défaut
+        console.warn('⚠️ Erreur/Timeout récupération rôle:', error.message)
+        console.log('🟡 Utilisation du rôle par défaut: admin')
+        setRole('admin') // Rôle par défaut
         setLoading(false)
         return
       }
@@ -80,16 +85,17 @@ export const AuthProvider = ({ children }) => {
         console.log('🟢 Rôle récupéré:', data.role)
         setRole(data.role)
       } else {
-        console.log('⚠️ Aucun rôle trouvé, utilisation du rôle par défaut')
-        setRole('user')
+        console.log('🟡 Aucun rôle trouvé, utilisation du rôle par défaut')
+        setRole('admin')
       }
       
       console.log('🟢 Loading terminé (fetchUserRole)')
       setLoading(false)
       
     } catch (error) {
-      console.error('❌ Exception fetchUserRole:', error)
-      setRole('user') // Rôle par défaut en cas d'erreur
+      console.error('❌ Exception fetchUserRole:', error.message)
+      console.log('🟡 Utilisation du rôle par défaut: admin')
+      setRole('admin') // Rôle par défaut en cas d'erreur
       setLoading(false)
     }
   }
