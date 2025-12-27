@@ -1,23 +1,31 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../services/supabase'
-import { Camera, QrCode as QrCodeIcon, Clock, User, X } from 'lucide-react'
+import { Camera, QrCode as QrCodeIcon, Clock, User, X, AlertTriangle } from 'lucide-react'
 
 export default function Scan() {
   const [manualCode, setManualCode] = useState('')
   const [result, setResult] = useState(null)
   const [todayAttendance, setTodayAttendance] = useState([])
   const [scanning, setScanning] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
+  const [statusMessages, setStatusMessages] = useState([])
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const scanIntervalRef = useRef(null)
 
+  const addStatus = (msg, isError = false) => {
+    console.log(msg)
+    setStatusMessages(prev => [...prev.slice(-3), { text: msg, isError, time: Date.now() }])
+  }
+
   useEffect(() => {
     loadTodayAttendance()
     
-    // Charger jsQR
     if (!window.jsQR) {
       const script = document.createElement('script')
       script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
+      script.onload = () => addStatus('✅ jsQR chargé')
+      script.onerror = () => addStatus('❌ Erreur jsQR', true)
       document.body.appendChild(script)
     }
     
@@ -42,47 +50,108 @@ export default function Scan() {
   }
 
   const startCamera = async () => {
-    console.log('🎬 Démarrage caméra...')
+    setErrorMessage('')
+    setStatusMessages([])
+    addStatus('🎬 Demande accès caméra...')
     
     try {
+      // Vérifier si getUserMedia existe
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('getUserMedia non supporté sur ce navigateur')
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
+        video: { 
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
         audio: false
       })
       
-      console.log('✅ Stream obtenu')
+      addStatus('✅ Accès caméra OK')
       
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        setScanning(true)
-        
-        setTimeout(() => {
-          if (videoRef.current) {
-            videoRef.current.play().then(() => {
-              console.log('▶️ Vidéo en lecture')
-              setTimeout(() => {
-                scanIntervalRef.current = setInterval(scanQRCode, 500)
-                console.log('🔍 Scan démarré')
-              }, 500)
-            }).catch(e => console.error('❌ Erreur play:', e))
-          }
-        }, 500)
+      const tracks = stream.getVideoTracks()
+      if (tracks.length === 0) {
+        throw new Error('Aucune piste vidéo trouvée')
       }
+      
+      const settings = tracks[0].getSettings()
+      addStatus(`📹 ${settings.width}x${settings.height}`)
+      
+      if (!videoRef.current) {
+        throw new Error('Élément vidéo non trouvé')
+      }
+
+      videoRef.current.srcObject = stream
+      setScanning(true)
+      
+      // Attendre un peu que le stream soit prêt
+      await new Promise(resolve => setTimeout(resolve, 300))
+      
+      // Forcer le play
+      try {
+        await videoRef.current.play()
+        addStatus('▶️ Lecture vidéo OK')
+      } catch (playErr) {
+        addStatus('⚠️ Tentative autoplay: ' + playErr.message, true)
+        // Essayer de nouveau après un court délai
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await videoRef.current.play()
+        addStatus('▶️ Lecture OK (2ème essai)')
+      }
+      
+      // Attendre que la vidéo soit vraiment prête
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      
+      // Vérifier les dimensions
+      if (videoRef.current.videoWidth === 0) {
+        addStatus('⚠️ Dimensions vidéo = 0, attente...', true)
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+      
+      if (videoRef.current.videoWidth > 0) {
+        addStatus(`📊 Vidéo: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`)
+        scanIntervalRef.current = setInterval(scanQRCode, 300)
+        addStatus('🔍 Scan QR démarré')
+      } else {
+        throw new Error('Impossible d\'obtenir les dimensions de la vidéo')
+      }
+      
     } catch (error) {
-      console.error('❌ Erreur caméra:', error)
-      alert('Erreur caméra: ' + error.message)
+      console.error('Erreur caméra:', error)
+      addStatus('❌ ' + error.message, true)
+      
+      let userMsg = 'Erreur: ' + error.message
+      
+      if (error.name === 'NotAllowedError') {
+        userMsg = 'Permission caméra refusée. Allez dans Paramètres > Safari/Chrome > Appareil photo et autorisez l\'accès.'
+      } else if (error.name === 'NotFoundError') {
+        userMsg = 'Aucune caméra trouvée sur cet appareil.'
+      } else if (error.name === 'NotReadableError') {
+        userMsg = 'La caméra est utilisée par une autre application. Fermez les autres apps.'
+      } else if (error.name === 'OverconstrainedError') {
+        userMsg = 'Caméra arrière non disponible. Essayez avec la caméra frontale.'
+      }
+      
+      setErrorMessage(userMsg)
+      stopCamera()
     }
   }
 
   const stopCamera = () => {
-    console.log('🛑 Arrêt caméra')
+    addStatus('🛑 Arrêt caméra')
     
     if (scanIntervalRef.current) {
       clearInterval(scanIntervalRef.current)
+      scanIntervalRef.current = null
     }
     
     if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(track => track.stop())
+      videoRef.current.srcObject.getTracks().forEach(track => {
+        track.stop()
+        addStatus(`⏹️ Track ${track.kind} arrêté`)
+      })
       videoRef.current.srcObject = null
     }
     
@@ -98,19 +167,23 @@ export default function Scan() {
     if (video.readyState < 2) return
     if (video.videoWidth === 0) return
 
-    const ctx = canvas.getContext('2d')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    
-    ctx.drawImage(video, 0, 0)
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    
-    const code = window.jsQR(imageData.data, imageData.width, imageData.height)
+    try {
+      const ctx = canvas.getContext('2d')
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      
+      ctx.drawImage(video, 0, 0)
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      
+      const code = window.jsQR(imageData.data, imageData.width, imageData.height)
 
-    if (code) {
-      console.log('✅ QR trouvé:', code.data)
-      stopCamera()
-      handleScan(code.data)
+      if (code) {
+        addStatus('✅ QR détecté: ' + code.data)
+        stopCamera()
+        handleScan(code.data)
+      }
+    } catch (err) {
+      addStatus('❌ Erreur scan: ' + err.message, true)
     }
   }
 
@@ -123,10 +196,7 @@ export default function Scan() {
         .single()
 
       if (!employee) {
-        setResult({
-          success: false,
-          message: 'QR Code non reconnu'
-        })
+        setResult({ success: false, message: 'QR Code non reconnu' })
         return
       }
 
@@ -209,10 +279,7 @@ export default function Scan() {
       loadTodayAttendance()
     } catch (err) {
       console.error('Erreur:', err)
-      setResult({
-        success: false,
-        message: 'Erreur lors du pointage'
-      })
+      setResult({ success: false, message: 'Erreur lors du pointage' })
     }
   }
 
@@ -300,11 +367,11 @@ export default function Scan() {
                         onChange={(e) => setManualCode(e.target.value)}
                         onKeyPress={(e) => e.key === 'Enter' && handleManualScan()}
                         placeholder="EMP0001"
-                        className="flex-1 px-4 py-3 border rounded-lg font-mono"
+                        className="flex-1 px-4 py-3 border rounded-lg font-mono text-lg"
                       />
                       <button
                         onClick={handleManualScan}
-                        className="px-6 py-3 bg-indigo-600 text-white rounded-lg"
+                        className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-semibold"
                       >
                         OK
                       </button>
@@ -313,17 +380,45 @@ export default function Scan() {
 
                   <button
                     onClick={startCamera}
-                    className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-xl font-semibold flex items-center justify-center gap-2"
+                    className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-xl font-semibold flex items-center justify-center gap-2 shadow-lg"
                   >
                     <Camera className="w-5 h-5" />
                     Scanner avec la caméra
                   </button>
+
+                  {errorMessage && (
+                    <div className="p-4 bg-red-50 border-2 border-red-300 rounded-xl">
+                      <div className="flex items-start gap-3">
+                        <AlertTriangle className="w-6 h-6 text-red-600 flex-shrink-0 mt-1" />
+                        <div className="flex-1">
+                          <p className="font-bold text-red-900 mb-1">Erreur Caméra</p>
+                          <p className="text-sm text-red-700">{errorMessage}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {statusMessages.length > 0 && (
+                    <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                      <p className="font-semibold text-blue-900 mb-2 text-sm">📋 Statut :</p>
+                      <div className="space-y-1">
+                        {statusMessages.map((msg, idx) => (
+                          <p key={idx} className={`text-xs font-mono ${
+                            msg.isError ? 'text-red-600' : 'text-blue-700'
+                          }`}>
+                            {msg.text}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="relative bg-black rounded-lg overflow-hidden">
                   <video
                     ref={videoRef}
                     className="w-full"
+                    style={{ minHeight: '300px' }}
                     playsInline
                     muted
                     autoPlay
@@ -331,21 +426,27 @@ export default function Scan() {
                   <canvas ref={canvasRef} className="hidden" />
                   
                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div className="w-64 h-64 border-4 border-white rounded-lg"></div>
+                    <div className="w-64 h-64 border-4 border-white rounded-lg shadow-2xl"></div>
                   </div>
 
                   <button
                     onClick={stopCamera}
-                    className="absolute top-4 right-4 p-3 bg-red-600 text-white rounded-full"
+                    className="absolute top-4 right-4 p-3 bg-red-600 text-white rounded-full shadow-lg z-10"
                   >
                     <X className="w-6 h-6" />
                   </button>
                   
-                  <div className="absolute bottom-4 left-4 right-4 text-center">
-                    <p className="text-white text-sm bg-black bg-opacity-50 px-4 py-2 rounded">
-                      📷 Positionnez le QR code dans le cadre
-                    </p>
-                  </div>
+                  {statusMessages.length > 0 && (
+                    <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-80 p-3">
+                      {statusMessages.slice(-3).map((msg, idx) => (
+                        <p key={idx} className={`text-xs font-mono mb-1 ${
+                          msg.isError ? 'text-red-400' : 'text-green-400'
+                        }`}>
+                          {msg.text}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
