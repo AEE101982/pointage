@@ -8,63 +8,108 @@ export default function Scan() {
   const [todayAttendance, setTodayAttendance] = useState([])
   const [scanning, setScanning] = useState(false)
   const [stream, setStream] = useState(null)
+  const [error, setError] = useState(null)
+  const [loading, setLoading] = useState(true)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const scanIntervalRef = useRef(null)
 
   useEffect(() => {
-    loadTodayAttendance()
+    initComponent()
     
-    // Importer dynamiquement jsQR
-    const script = document.createElement('script')
-    script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
-    document.body.appendChild(script)
-
     return () => {
-      stopCamera()
-      document.body.removeChild(script)
+      cleanup()
     }
   }, [])
+
+  const initComponent = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      
+      // Charger les présences
+      await loadTodayAttendance()
+      
+      // Charger jsQR
+      await loadJsQR()
+      
+      setLoading(false)
+    } catch (err) {
+      console.error('Erreur initialisation:', err)
+      setError(err.message)
+      setLoading(false)
+    }
+  }
+
+  const loadJsQR = () => {
+    return new Promise((resolve, reject) => {
+      // Vérifier si jsQR est déjà chargé
+      if (window.jsQR) {
+        resolve()
+        return
+      }
+
+      const script = document.createElement('script')
+      script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
+      script.onload = () => resolve()
+      script.onerror = () => reject(new Error('Impossible de charger jsQR'))
+      document.body.appendChild(script)
+    })
+  }
+
+  const cleanup = () => {
+    stopCamera()
+    // Ne pas supprimer le script jsQR car il peut être utilisé par d'autres composants
+  }
 
   const loadTodayAttendance = async () => {
     try {
       const today = new Date().toISOString().split('T')[0]
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('attendance')
         .select('*, employees(first_name, last_name, department)')
         .eq('date', today)
         .order('created_at', { ascending: false })
 
+      if (error) throw error
+
       setTodayAttendance(data || [])
-    } catch (error) {
-      console.error('Erreur chargement présences:', error)
+    } catch (err) {
+      console.error('Erreur chargement présences:', err)
+      // Ne pas bloquer l'app si on ne peut pas charger les présences
+      setTodayAttendance([])
     }
   }
 
   const playSound = (type) => {
-    const context = new (window.AudioContext || window.webkitAudioContext)()
-    const oscillator = context.createOscillator()
-    const gainNode = context.createGain()
+    try {
+      const context = new (window.AudioContext || window.webkitAudioContext)()
+      const oscillator = context.createOscillator()
+      const gainNode = context.createGain()
 
-    oscillator.connect(gainNode)
-    gainNode.connect(context.destination)
+      oscillator.connect(gainNode)
+      gainNode.connect(context.destination)
 
-    if (type === 'success') {
-      oscillator.frequency.setValueAtTime(523.25, context.currentTime)
-      oscillator.frequency.setValueAtTime(659.25, context.currentTime + 0.1)
-      oscillator.frequency.setValueAtTime(783.99, context.currentTime + 0.2)
-      gainNode.gain.setValueAtTime(0.3, context.currentTime)
-      gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.5)
-      oscillator.start(context.currentTime)
-      oscillator.stop(context.currentTime + 0.5)
-    } else {
-      oscillator.frequency.setValueAtTime(400, context.currentTime)
-      oscillator.frequency.setValueAtTime(300, context.currentTime + 0.1)
-      oscillator.frequency.setValueAtTime(200, context.currentTime + 0.2)
-      gainNode.gain.setValueAtTime(0.3, context.currentTime)
-      gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.4)
-      oscillator.start(context.currentTime)
-      oscillator.stop(context.currentTime + 0.4)
+      if (type === 'success') {
+        oscillator.frequency.setValueAtTime(523.25, context.currentTime)
+        oscillator.frequency.setValueAtTime(659.25, context.currentTime + 0.1)
+        oscillator.frequency.setValueAtTime(783.99, context.currentTime + 0.2)
+        gainNode.gain.setValueAtTime(0.3, context.currentTime)
+        gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.5)
+        oscillator.start(context.currentTime)
+        oscillator.stop(context.currentTime + 0.5)
+      } else {
+        oscillator.frequency.setValueAtTime(400, context.currentTime)
+        oscillator.frequency.setValueAtTime(300, context.currentTime + 0.1)
+        oscillator.frequency.setValueAtTime(200, context.currentTime + 0.2)
+        gainNode.gain.setValueAtTime(0.3, context.currentTime)
+        gainNode.gain.exponentialRampToValueAtTime(0.01, context.currentTime + 0.4)
+        oscillator.start(context.currentTime)
+        oscillator.stop(context.currentTime + 0.4)
+      }
+    } catch (err) {
+      console.error('Erreur son:', err)
+      // Continuer sans son si erreur
     }
   }
 
@@ -79,14 +124,15 @@ export default function Scan() {
       
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream
-        videoRef.current.play()
+        await videoRef.current.play()
         
         // Démarrer le scan
         scanIntervalRef.current = setInterval(scanQRCode, 500)
       }
-    } catch (error) {
-      console.error('Erreur caméra:', error)
+    } catch (err) {
+      console.error('Erreur caméra:', err)
       alert('Impossible d\'accéder à la caméra. Vérifiez les permissions.')
+      stopCamera()
     }
   }
 
@@ -99,6 +145,10 @@ export default function Scan() {
     if (stream) {
       stream.getTracks().forEach(track => track.stop())
       setStream(null)
+    }
+    
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
     }
     
     setScanning(false)
@@ -245,12 +295,13 @@ export default function Scan() {
       }
 
       loadTodayAttendance()
-    } catch (error) {
-      console.error('Erreur pointage:', error)
+    } catch (err) {
+      console.error('Erreur pointage:', err)
       playSound('error')
       setResult({
         success: false,
         message: 'Erreur lors du pointage',
+        subtitle: err.message,
         employee: null
       })
     }
@@ -265,6 +316,36 @@ export default function Scan() {
 
   const resetScan = () => {
     setResult(null)
+  }
+
+  // Affichage du chargement
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Chargement...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Affichage des erreurs
+  if (error) {
+    return (
+      <div className="p-6">
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+          <h3 className="text-red-800 font-semibold mb-2">Erreur</h3>
+          <p className="text-red-600">{error}</p>
+          <button
+            onClick={initComponent}
+            className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+          >
+            Réessayer
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -411,7 +492,8 @@ export default function Scan() {
                       />
                       <button
                         onClick={handleManualScan}
-                        className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium"
+                        disabled={!manualCode.trim()}
+                        className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         OK
                       </button>
@@ -435,6 +517,7 @@ export default function Scan() {
                       ref={videoRef}
                       className="w-full rounded-lg"
                       playsInline
+                      muted
                     />
                     <canvas ref={canvasRef} className="hidden" />
                     
