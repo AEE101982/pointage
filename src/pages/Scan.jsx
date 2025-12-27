@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../services/supabase'
-import { Camera, QrCode as QrCodeIcon, Clock, User, X } from 'lucide-react'
+import { Camera, QrCode as QrCodeIcon, Clock, User, X, AlertCircle } from 'lucide-react'
 
 export default function Scan() {
   const [manualCode, setManualCode] = useState('')
@@ -8,10 +8,17 @@ export default function Scan() {
   const [todayAttendance, setTodayAttendance] = useState([])
   const [scanning, setScanning] = useState(false)
   const [cameraError, setCameraError] = useState(null)
+  const [debugLogs, setDebugLogs] = useState([])
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const scanIntervalRef = useRef(null)
   const streamRef = useRef(null)
+
+  // Fonction pour ajouter des logs visibles
+  const addLog = (message, type = 'info') => {
+    console.log(message)
+    setDebugLogs(prev => [...prev.slice(-4), { message, type, time: new Date().toLocaleTimeString() }])
+  }
 
   useEffect(() => {
     loadTodayAttendance()
@@ -23,10 +30,15 @@ export default function Scan() {
   }, [])
 
   const loadJsQR = () => {
-    if (window.jsQR) return
+    if (window.jsQR) {
+      addLog('✅ jsQR déjà chargé', 'success')
+      return
+    }
     
     const script = document.createElement('script')
     script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
+    script.onload = () => addLog('✅ jsQR chargé', 'success')
+    script.onerror = () => addLog('❌ Erreur chargement jsQR', 'error')
     document.body.appendChild(script)
   }
 
@@ -47,27 +59,32 @@ export default function Scan() {
 
   const startCamera = async () => {
     setCameraError(null)
+    setDebugLogs([])
     
     try {
-      console.log('📷 Demande d\'accès à la caméra...')
+      addLog('📷 Demande accès caméra...', 'info')
       
-      // Arrêter le stream précédent s'il existe
+      // Arrêter le stream précédent
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop())
       }
 
-      // Configuration pour mobile
+      // Configuration simplifiée pour mobile
       const constraints = {
         video: {
-          facingMode: { ideal: 'environment' }, // Caméra arrière sur mobile
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          facingMode: 'environment', // Caméra arrière
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 }
         },
         audio: false
       }
 
       const mediaStream = await navigator.mediaDevices.getUserMedia(constraints)
-      console.log('✅ Caméra accessible')
+      addLog('✅ Accès caméra autorisé', 'success')
+      
+      const videoTrack = mediaStream.getVideoTracks()[0]
+      const settings = videoTrack.getSettings()
+      addLog(`📹 Résolution: ${settings.width}x${settings.height}`, 'info')
       
       streamRef.current = mediaStream
       setScanning(true)
@@ -75,31 +92,43 @@ export default function Scan() {
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream
         
-        // Attendre que les métadonnées soient chargées avant de jouer
+        // Événement: métadonnées chargées
         videoRef.current.onloadedmetadata = () => {
-          console.log('📹 Métadonnées vidéo chargées')
+          addLog('📊 Métadonnées chargées', 'info')
+          addLog(`Vidéo: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`, 'info')
+          
+          // Démarrer la lecture
           videoRef.current.play()
             .then(() => {
-              console.log('▶️ Lecture vidéo démarrée')
-              // Démarrer le scan QR
-              scanIntervalRef.current = setInterval(scanQRCode, 500)
+              addLog('▶️ Lecture vidéo OK', 'success')
+              // Attendre un peu avant de scanner
+              setTimeout(() => {
+                scanIntervalRef.current = setInterval(scanQRCode, 300)
+                addLog('🔍 Scan QR démarré', 'success')
+              }, 1000)
             })
             .catch(err => {
-              console.error('❌ Erreur lecture vidéo:', err)
+              addLog(`❌ Erreur lecture: ${err.message}`, 'error')
               setCameraError('Impossible de démarrer la vidéo')
             })
         }
+
+        // Événement: erreur vidéo
+        videoRef.current.onerror = (e) => {
+          addLog(`❌ Erreur vidéo: ${e.message}`, 'error')
+        }
       }
     } catch (error) {
-      console.error('❌ Erreur caméra:', error)
+      addLog(`❌ ${error.name}: ${error.message}`, 'error')
+      
       let errorMessage = 'Impossible d\'accéder à la caméra'
       
       if (error.name === 'NotAllowedError') {
-        errorMessage = 'Vous devez autoriser l\'accès à la caméra'
+        errorMessage = 'Permission refusée. Autorisez l\'accès à la caméra dans les paramètres.'
       } else if (error.name === 'NotFoundError') {
         errorMessage = 'Aucune caméra trouvée sur cet appareil'
       } else if (error.name === 'NotReadableError') {
-        errorMessage = 'La caméra est déjà utilisée par une autre application'
+        errorMessage = 'Caméra utilisée par une autre application'
       }
       
       setCameraError(errorMessage)
@@ -108,7 +137,7 @@ export default function Scan() {
   }
 
   const stopCamera = () => {
-    console.log('🛑 Arrêt de la caméra')
+    addLog('🛑 Arrêt caméra', 'info')
     
     if (scanIntervalRef.current) {
       clearInterval(scanIntervalRef.current)
@@ -116,10 +145,7 @@ export default function Scan() {
     }
     
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        track.stop()
-        console.log('⏹️ Track arrêté:', track.kind)
-      })
+      streamRef.current.getTracks().forEach(track => track.stop())
       streamRef.current = null
     }
     
@@ -132,14 +158,20 @@ export default function Scan() {
   }
 
   const scanQRCode = () => {
-    if (!videoRef.current || !canvasRef.current || !window.jsQR) return
+    if (!videoRef.current || !canvasRef.current || !window.jsQR) {
+      return
+    }
 
     const video = videoRef.current
     const canvas = canvasRef.current
 
     // Vérifier que la vidéo est prête
     if (video.readyState !== video.HAVE_ENOUGH_DATA) {
-      console.log('⏳ Vidéo pas encore prête')
+      return
+    }
+
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      addLog('⚠️ Dimensions vidéo = 0', 'warning')
       return
     }
 
@@ -148,11 +180,6 @@ export default function Scan() {
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight
     
-    if (canvas.width === 0 || canvas.height === 0) {
-      console.log('⚠️ Dimensions vidéo invalides')
-      return
-    }
-
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
     
@@ -161,7 +188,7 @@ export default function Scan() {
     })
 
     if (code) {
-      console.log('✅ QR Code détecté:', code.data)
+      addLog(`✅ QR trouvé: ${code.data}`, 'success')
       stopCamera()
       handleScan(code.data)
     }
@@ -502,8 +529,9 @@ export default function Scan() {
                   </button>
 
                   {cameraError && (
-                    <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-                      {cameraError}
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+                      <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                      <p className="text-red-700 text-sm">{cameraError}</p>
                     </div>
                   )}
                 </>
@@ -513,7 +541,11 @@ export default function Scan() {
                   <div className="relative bg-black rounded-lg overflow-hidden">
                     <video
                       ref={videoRef}
-                      className="w-full rounded-lg"
+                      className="w-full h-auto"
+                      style={{ 
+                        objectFit: 'cover',
+                        aspectRatio: '16/9'
+                      }}
                       playsInline
                       muted
                       autoPlay
@@ -522,20 +554,34 @@ export default function Scan() {
                     
                     {/* Overlay de visée */}
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <div className="w-64 h-64 border-4 border-white rounded-lg shadow-lg"></div>
+                      <div className="w-64 h-64 border-4 border-white rounded-lg shadow-2xl"></div>
                     </div>
 
                     {/* Bouton fermer */}
                     <button
                       onClick={stopCamera}
-                      className="absolute top-4 right-4 p-2 bg-red-600 text-white rounded-full hover:bg-red-700 transition shadow-lg"
+                      className="absolute top-4 right-4 p-3 bg-red-600 text-white rounded-full hover:bg-red-700 transition shadow-lg z-10"
                     >
                       <X className="w-6 h-6" />
                     </button>
+
+                    {/* Logs de débogage */}
+                    <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-75 p-3 space-y-1">
+                      {debugLogs.map((log, idx) => (
+                        <div key={idx} className={`text-xs font-mono ${
+                          log.type === 'error' ? 'text-red-400' :
+                          log.type === 'success' ? 'text-green-400' :
+                          log.type === 'warning' ? 'text-yellow-400' :
+                          'text-white'
+                        }`}>
+                          [{log.time}] {log.message}
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   <p className="text-center text-sm text-gray-600">
-                    📷 Positionnez le QR code dans le cadre
+                    📷 Positionnez le QR code dans le cadre blanc
                   </p>
                 </>
               )}
