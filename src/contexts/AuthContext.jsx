@@ -17,7 +17,11 @@ export const AuthProvider = ({ children }) => {
       setUser(session?.user ?? null)
       
       if (session?.user) {
-        await fetchUserRole(session.user.email)
+        // Appeler fetchUserRole mais ne pas bloquer
+        fetchUserRole(session.user.email).finally(() => {
+          console.log('🟢 Loading terminé (onAuthStateChange)')
+          setLoading(false)
+        })
       } else {
         setRole(null)
         setLoading(false)
@@ -44,7 +48,11 @@ export const AuthProvider = ({ children }) => {
       setUser(session?.user ?? null)
       
       if (session?.user) {
-        await fetchUserRole(session.user.email)
+        // ✅ TOUJOURS terminer le loading même si fetchUserRole échoue
+        await fetchUserRole(session.user.email).finally(() => {
+          console.log('🟢 Loading terminé (checkSession)')
+          setLoading(false)
+        })
       } else {
         console.log('🟡 Pas de session, loading = false')
         setLoading(false)
@@ -60,9 +68,9 @@ export const AuthProvider = ({ children }) => {
     console.log('🔵 FetchUserRole: Début pour', email)
     
     try {
-      // ✅ TIMEOUT de 3 secondes pour éviter le blocage infini
+      // Timeout de 2 secondes
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Timeout')), 3000)
+        setTimeout(() => reject(new Error('Timeout')), 2000)
       )
       
       const fetchPromise = supabase
@@ -74,10 +82,9 @@ export const AuthProvider = ({ children }) => {
       const { data, error } = await Promise.race([fetchPromise, timeoutPromise])
       
       if (error) {
-        console.warn('⚠️ Erreur/Timeout récupération rôle:', error.message)
+        console.warn('⚠️ Erreur récupération rôle:', error.message)
         console.log('🟡 Utilisation du rôle par défaut: admin')
-        setRole('admin') // Rôle par défaut
-        setLoading(false)
+        setRole('admin')
         return
       }
       
@@ -89,14 +96,10 @@ export const AuthProvider = ({ children }) => {
         setRole('admin')
       }
       
-      console.log('🟢 Loading terminé (fetchUserRole)')
-      setLoading(false)
-      
     } catch (error) {
       console.error('❌ Exception fetchUserRole:', error.message)
       console.log('🟡 Utilisation du rôle par défaut: admin')
-      setRole('admin') // Rôle par défaut en cas d'erreur
-      setLoading(false)
+      setRole('admin')
     }
   }
 
@@ -114,8 +117,12 @@ export const AuthProvider = ({ children }) => {
       }
 
       console.log('🟢 SignIn réussi')
+      
+      // Ne pas bloquer la connexion sur fetchUserRole
       if (data.user) {
-        await fetchUserRole(data.user.email)
+        fetchUserRole(data.user.email).catch(err => {
+          console.warn('Erreur fetchUserRole (non bloquant):', err)
+        })
       }
 
       return { data, error: null }
