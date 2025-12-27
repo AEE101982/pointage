@@ -8,15 +8,9 @@ export default function Scan() {
   const [todayAttendance, setTodayAttendance] = useState([])
   const [scanning, setScanning] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
-  const [statusMessages, setStatusMessages] = useState([])
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const scanIntervalRef = useRef(null)
-
-  const addStatus = (msg, isError = false) => {
-    console.log(msg)
-    setStatusMessages(prev => [...prev.slice(-3), { text: msg, isError, time: Date.now() }])
-  }
 
   useEffect(() => {
     loadTodayAttendance()
@@ -24,7 +18,6 @@ export default function Scan() {
     if (!window.jsQR) {
       const script = document.createElement('script')
       script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
-      script.onload = () => addStatus('✅ jsQR chargé')
       document.body.appendChild(script)
     }
     
@@ -50,25 +43,16 @@ export default function Scan() {
 
   const startCamera = async () => {
     setErrorMessage('')
-    setStatusMessages([])
-    
-    // ✅ IMPORTANT: Activer le scanning AVANT de démarrer la caméra
-    // Cela crée l'élément <video> dans le DOM
     setScanning(true)
     
-    // Attendre que React monte l'élément video
     await new Promise(resolve => setTimeout(resolve, 100))
-    
-    addStatus('🎬 Demande accès caméra...')
     
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('getUserMedia non supporté')
       }
 
-      // Vérifier que videoRef est maintenant disponible
       if (!videoRef.current) {
-        addStatus('⚠️ Élément vidéo pas encore monté, attente...', true)
         await new Promise(resolve => setTimeout(resolve, 200))
         
         if (!videoRef.current) {
@@ -84,60 +68,43 @@ export default function Scan() {
         },
         audio: false
       })
-      
-      addStatus('✅ Accès caméra OK')
-      
-      const tracks = stream.getVideoTracks()
-      const settings = tracks[0].getSettings()
-      addStatus(`📹 ${settings.width}x${settings.height}`)
 
       videoRef.current.srcObject = stream
       
-      // Attendre un peu
       await new Promise(resolve => setTimeout(resolve, 300))
       
-      // Lancer la lecture
       try {
         await videoRef.current.play()
-        addStatus('▶️ Lecture vidéo OK')
       } catch (playErr) {
-        addStatus('⚠️ Erreur play, réessai...', true)
         await new Promise(resolve => setTimeout(resolve, 500))
         await videoRef.current.play()
-        addStatus('▶️ Lecture OK (2ème essai)')
       }
       
-      // Attendre que la vidéo soit prête
       await new Promise(resolve => setTimeout(resolve, 1000))
       
-      // Vérifier dimensions
       if (videoRef.current.videoWidth === 0) {
-        addStatus('⚠️ Attente dimensions...', true)
         await new Promise(resolve => setTimeout(resolve, 1000))
       }
       
       if (videoRef.current.videoWidth > 0) {
-        addStatus(`📊 Vidéo: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`)
         scanIntervalRef.current = setInterval(scanQRCode, 300)
-        addStatus('🔍 Scan QR démarré')
       } else {
-        throw new Error('Dimensions vidéo = 0')
+        throw new Error('Impossible d\'obtenir les dimensions de la vidéo')
       }
       
     } catch (error) {
       console.error('Erreur caméra:', error)
-      addStatus('❌ ' + error.message, true)
       
-      let userMsg = 'Erreur: ' + error.message
+      let userMsg = 'Impossible d\'accéder à la caméra'
       
       if (error.name === 'NotAllowedError') {
-        userMsg = 'PERMISSION REFUSÉE\n\nAllez dans Paramètres de votre téléphone:\n• Paramètres > Safari/Chrome\n• Appareil photo\n• Autorisez l\'accès pour ce site'
+        userMsg = 'Permission caméra refusée.\n\nAllez dans Paramètres > Safari/Chrome > Appareil photo et autorisez l\'accès pour ce site.'
       } else if (error.name === 'NotFoundError') {
-        userMsg = 'Aucune caméra trouvée sur cet appareil'
+        userMsg = 'Aucune caméra trouvée sur cet appareil.'
       } else if (error.name === 'NotReadableError') {
-        userMsg = 'Caméra déjà utilisée par une autre app.\n\nFermez les autres applications et réessayez.'
+        userMsg = 'La caméra est déjà utilisée par une autre application.\n\nFermez les autres applications et réessayez.'
       } else if (error.name === 'OverconstrainedError') {
-        userMsg = 'Caméra arrière non disponible'
+        userMsg = 'Caméra arrière non disponible.'
       }
       
       setErrorMessage(userMsg)
@@ -179,7 +146,6 @@ export default function Scan() {
       const code = window.jsQR(imageData.data, imageData.width, imageData.height)
 
       if (code) {
-        addStatus('✅ QR détecté: ' + code.data)
         stopCamera()
         handleScan(code.data)
       }
@@ -219,7 +185,7 @@ export default function Scan() {
           setResult({
             success: false,
             message: 'Déjà pointé',
-            subtitle: `${employee.first_name} ${employee.last_name} a déjà pointé sa sortie`,
+            subtitle: `${employee.first_name} ${employee.last_name} a déjà pointé sa sortie aujourd'hui`,
             employee
           })
         } else {
@@ -398,21 +364,6 @@ export default function Scan() {
                       </div>
                     </div>
                   )}
-
-                  {statusMessages.length > 0 && (
-                    <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
-                      <p className="font-semibold text-blue-900 mb-2 text-sm">📋 Statut :</p>
-                      <div className="space-y-1">
-                        {statusMessages.map((msg, idx) => (
-                          <p key={idx} className={`text-xs font-mono ${
-                            msg.isError ? 'text-red-600 font-bold' : 'text-blue-700'
-                          }`}>
-                            {msg.text}
-                          </p>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </>
               ) : (
                 <div className="relative bg-black rounded-lg overflow-hidden">
@@ -437,17 +388,11 @@ export default function Scan() {
                     <X className="w-6 h-6" />
                   </button>
                   
-                  {statusMessages.length > 0 && (
-                    <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-90 p-4">
-                      {statusMessages.slice(-4).map((msg, idx) => (
-                        <p key={idx} className={`text-xs font-mono mb-1 ${
-                          msg.isError ? 'text-red-400 font-bold' : 'text-green-400'
-                        }`}>
-                          {msg.text}
-                        </p>
-                      ))}
-                    </div>
-                  )}
+                  <div className="absolute bottom-4 left-0 right-0 px-4">
+                    <p className="text-center text-white text-sm bg-black bg-opacity-60 px-4 py-2 rounded-lg">
+                      📷 Positionnez le QR code dans le cadre blanc
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
@@ -460,7 +405,7 @@ export default function Scan() {
             </div>
 
             {todayAttendance.length === 0 ? (
-              <p className="text-center text-gray-500 py-8">Aucun pointage</p>
+              <p className="text-center text-gray-500 py-8">Aucun pointage aujourd'hui</p>
             ) : (
               <div className="space-y-3">
                 {todayAttendance.map((record) => (
@@ -472,8 +417,8 @@ export default function Scan() {
                       <p className="text-sm text-gray-600">{record.employees?.department}</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-sm">↓ {record.check_in}</p>
-                      {record.check_out && <p className="text-sm">↑ {record.check_out}</p>}
+                      <p className="text-sm font-medium">↓ {record.check_in}</p>
+                      {record.check_out && <p className="text-sm text-gray-600">↑ {record.check_out}</p>}
                       <span className={`inline-block mt-1 px-2 py-1 text-xs rounded-full ${
                         record.status === 'present' ? 'bg-green-100 text-green-800' :
                         'bg-orange-100 text-orange-800'
