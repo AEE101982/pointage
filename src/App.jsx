@@ -5,12 +5,13 @@ import Employees from "./pages/Employees";
 import Scan from "./pages/Scan";
 import Reports from "./pages/Reports";
 import Users from "./pages/Users";
+import Settings from "./pages/Settings";
 import ProtectedRoute from "./components/auth/ProtectedRoute";
 import Layout from "./components/layout/Layout";
 
 export default function App() {
   return (
-    <BrowserRouter>  {/* ✅ Changé de HashRouter à BrowserRouter */}
+    <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route element={<ProtectedRoute />}>
@@ -20,6 +21,7 @@ export default function App() {
             <Route path="/employees" element={<Employees />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/users" element={<Users />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Route>
