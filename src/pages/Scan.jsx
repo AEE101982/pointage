@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
 import { Camera, QrCode as QrCodeIcon, Clock, User, X, AlertTriangle } from 'lucide-react'
+import { BarcodeScanner } from '@capacitor-community/barcode-scanner'
+import { Capacitor } from '@capacitor/core'
 
 export default function Scan() {
   const [manualCode, setManualCode] = useState('')
@@ -8,21 +10,38 @@ export default function Scan() {
   const [todayAttendance, setTodayAttendance] = useState([])
   const [scanning, setScanning] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
-  const videoRef = useRef(null)
-  const canvasRef = useRef(null)
-  const scanIntervalRef = useRef(null)
+  const isNative = Capacitor.isNativePlatform()
 
   useEffect(() => {
     loadTodayAttendance()
     
-    if (!window.jsQR) {
-      const script = document.createElement('script')
-      script.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js'
-      document.body.appendChild(script)
-    }
+    // ✅ ÉCOUTER LES CHANGEMENTS EN TEMPS RÉEL
+    const today = new Date().toISOString().split('T')[0]
     
+    const channel = supabase
+      .channel('attendance-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'attendance',
+          filter: `date=eq.${today}` // Seulement les pointages d'aujourd'hui
+        },
+        (payload) => {
+          console.log('🔄 Changement détecté:', payload)
+          // Recharger la liste quand un changement est détecté
+          loadTodayAttendance()
+        }
+      )
+      .subscribe()
+
     return () => {
-      stopCamera()
+      if (scanning) {
+        stopScan()
+      }
+      // Se désabonner quand le composant est démonté
+      supabase.removeChannel(channel)
     }
   }, [])
 
@@ -35,129 +54,64 @@ export default function Scan() {
         .eq('date', today)
         .order('created_at', { ascending: false })
 
+      console.log('📊 Pointages chargés:', data?.length || 0)
       setTodayAttendance(data || [])
     } catch (error) {
       console.error('Erreur:', error)
     }
   }
 
-  const startCamera = async () => {
+  const startScan = async () => {
     setErrorMessage('')
-    setScanning(true)
-    
-    await new Promise(resolve => setTimeout(resolve, 100))
     
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('getUserMedia non supporté')
-      }
+      const status = await BarcodeScanner.checkPermission({ force: true })
 
-      if (!videoRef.current) {
-        await new Promise(resolve => setTimeout(resolve, 200))
-        
-        if (!videoRef.current) {
-          throw new Error('Impossible de monter l\'élément vidéo')
+      if (status.granted) {
+        console.log('✅ Permission caméra accordée')
+      } else if (status.denied) {
+        setErrorMessage('Permission caméra refusée. Veuillez autoriser l\'accès dans les paramètres de l\'application.')
+        return
+      } else if (status.restricted || status.unknown) {
+        setErrorMessage('Accès caméra non disponible sur cet appareil')
+        return
+      } else {
+        const newStatus = await BarcodeScanner.checkPermission({ force: true })
+        if (!newStatus.granted) {
+          setErrorMessage('Permission caméra requise pour scanner les QR codes')
+          return
         }
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          facingMode: 'environment',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: false
-      })
+      document.body.classList.add('scanner-active')
+      document.querySelector('body')?.style.setProperty('background', 'transparent')
+      
+      await BarcodeScanner.prepare()
+      setScanning(true)
 
-      videoRef.current.srcObject = stream
-      
-      await new Promise(resolve => setTimeout(resolve, 300))
-      
-      try {
-        await videoRef.current.play()
-      } catch (playErr) {
-        await new Promise(resolve => setTimeout(resolve, 500))
-        await videoRef.current.play()
+      const result = await BarcodeScanner.startScan()
+      stopScan()
+
+      if (result.hasContent) {
+        console.log('✅ QR Code scanné:', result.content)
+        handleScan(result.content)
       }
-      
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      
-      if (videoRef.current.videoWidth === 0) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
-      }
-      
-      if (videoRef.current.videoWidth > 0) {
-        scanIntervalRef.current = setInterval(scanQRCode, 300)
-      } else {
-        throw new Error('Impossible d\'obtenir les dimensions de la vidéo')
-      }
-      
+
     } catch (error) {
-      console.error('Erreur caméra:', error)
-      
-      let userMsg = 'Impossible d\'accéder à la caméra'
-      
-      if (error.name === 'NotAllowedError') {
-        userMsg = 'Permission caméra refusée.\n\nAllez dans Paramètres > Safari/Chrome > Appareil photo et autorisez l\'accès pour ce site.'
-      } else if (error.name === 'NotFoundError') {
-        userMsg = 'Aucune caméra trouvée sur cet appareil.'
-      } else if (error.name === 'NotReadableError') {
-        userMsg = 'La caméra est déjà utilisée par une autre application.\n\nFermez les autres applications et réessayez.'
-      } else if (error.name === 'OverconstrainedError') {
-        userMsg = 'Caméra arrière non disponible.'
-      }
-      
-      setErrorMessage(userMsg)
-      setScanning(false)
+      console.error('❌ Erreur scan:', error)
+      setErrorMessage('Erreur lors du scan: ' + error.message)
+      stopScan()
     }
   }
 
-  const stopCamera = () => {
-    if (scanIntervalRef.current) {
-      clearInterval(scanIntervalRef.current)
-      scanIntervalRef.current = null
-    }
-    
-    if (videoRef.current && videoRef.current.srcObject) {
-      videoRef.current.srcObject.getTracks().forEach(track => track.stop())
-      videoRef.current.srcObject = null
-    }
-    
+  const stopScan = () => {
+    BarcodeScanner.stopScan()
+    document.body.classList.remove('scanner-active')
+    document.querySelector('body')?.style.removeProperty('background')
     setScanning(false)
   }
 
-  const scanQRCode = () => {
-    if (!videoRef.current || !canvasRef.current || !window.jsQR) return
-
-    const video = videoRef.current
-    const canvas = canvasRef.current
-
-    if (video.readyState < 2) return
-    if (video.videoWidth === 0) return
-
-    try {
-      const ctx = canvas.getContext('2d')
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      
-      ctx.drawImage(video, 0, 0)
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-      
-      const code = window.jsQR(imageData.data, imageData.width, imageData.height)
-
-      if (code) {
-        stopCamera()
-        handleScan(code.data)
-      }
-    } catch (err) {
-      console.error('Erreur scan:', err)
-    }
-  }
-
   const calculateStatus = (hour, minute) => {
-    // Horaires de travail : 8h30-13h00 et 14h00-18h00
-    
-    // Matin : avant 8h35 = à l'heure, après = retard
     if (hour < 8 || (hour === 8 && minute <= 35)) {
       return { status: 'present', message: '✅ À l\'heure' }
     }
@@ -179,23 +133,20 @@ export default function Scan() {
     let totalMinutes = 0
     let overtimeMinutes = 0
     
-    // Heures du matin (8h30 - 13h00)
     if (checkInMorning && checkOutMorning) {
       const [inH, inM] = checkInMorning.split(':').map(Number)
       const [outH, outM] = checkOutMorning.split(':').map(Number)
       totalMinutes += (outH * 60 + outM) - (inH * 60 + inM)
     }
     
-    // Heures de l'après-midi (14h00 - 18h00)
     if (checkInAfternoon && checkOutAfternoon) {
       const [inH, inM] = checkInAfternoon.split(':').map(Number)
       const [outH, outM] = checkOutAfternoon.split(':').map(Number)
       const afternoonMinutes = (outH * 60 + outM) - (inH * 60 + inM)
       totalMinutes += afternoonMinutes
       
-      // Calcul des heures supplémentaires après 18h15
       if (outH > 18 || (outH === 18 && outM > 15)) {
-        const overtimeStart = 18 * 60 + 15 // 18h15 en minutes
+        const overtimeStart = 18 * 60 + 15
         const checkOutMinutes = outH * 60 + outM
         overtimeMinutes = checkOutMinutes - overtimeStart
       }
@@ -233,14 +184,11 @@ export default function Scan() {
       const hour = parseInt(currentTime.split(':')[0])
       const minute = parseInt(currentTime.split(':')[1])
 
-      // Déterminer le type de pointage en fonction de l'heure
       let pointageType = ''
       let greeting = ''
       
       if (hour < 13) {
-        // Matin (avant 13h)
         if (!existing) {
-          // Premier pointage : entrée matin
           const statusInfo = calculateStatus(hour, minute)
           
           await supabase
@@ -266,7 +214,6 @@ export default function Scan() {
             statusMessage: statusInfo.message
           })
         } else if (!existing.check_out_morning) {
-          // Deuxième pointage : sortie matin
           await supabase
             .from('attendance')
             .update({ check_out_morning: currentTime })
@@ -291,7 +238,6 @@ export default function Scan() {
           })
         }
       } else {
-        // Après-midi (après 13h)
         if (!existing) {
           setResult({
             success: false,
@@ -300,7 +246,6 @@ export default function Scan() {
             employee
           })
         } else if (!existing.check_in_afternoon) {
-          // Troisième pointage : retour après-midi
           await supabase
             .from('attendance')
             .update({ check_in_afternoon: currentTime })
@@ -317,7 +262,6 @@ export default function Scan() {
             pointageType
           })
         } else if (!existing.check_out_afternoon) {
-          // Quatrième pointage : sortie après-midi
           const { totalHours, overtimeHours } = calculateHours(
             existing.check_in_morning,
             existing.check_out_morning,
@@ -356,7 +300,9 @@ export default function Scan() {
         }
       }
 
-      loadTodayAttendance()
+      // Les changements seront automatiquement détectés par la subscription
+      // Pas besoin d'appeler loadTodayAttendance() manuellement
+      
     } catch (err) {
       console.error('Erreur:', err)
       setResult({ success: false, message: 'Erreur lors du pointage' })
@@ -489,11 +435,11 @@ export default function Scan() {
                   </div>
 
                   <button
-                    onClick={startCamera}
+                    onClick={startScan}
                     className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-xl font-semibold flex items-center justify-center gap-2 shadow-lg"
                   >
                     <Camera className="w-5 h-5" />
-                    Scanner avec la caméra
+                    {isNative ? 'Scanner avec la caméra' : 'Scanner avec la caméra (Web)'}
                   </button>
 
                   {errorMessage && (
@@ -501,7 +447,7 @@ export default function Scan() {
                       <div className="flex items-start gap-3">
                         <AlertTriangle className="w-6 h-6 text-red-600 flex-shrink-0 mt-1" />
                         <div className="flex-1">
-                          <p className="font-bold text-red-900 mb-2">Erreur Caméra</p>
+                          <p className="font-bold text-red-900 mb-2">Erreur</p>
                           <p className="text-sm text-red-700 whitespace-pre-line">{errorMessage}</p>
                         </div>
                       </div>
@@ -509,33 +455,16 @@ export default function Scan() {
                   )}
                 </>
               ) : (
-                <div className="relative bg-black rounded-lg overflow-hidden">
-                  <video
-                    ref={videoRef}
-                    className="w-full"
-                    style={{ minHeight: '400px', maxHeight: '70vh' }}
-                    playsInline
-                    muted
-                    autoPlay
-                  />
-                  <canvas ref={canvasRef} className="hidden" />
-                  
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div className="w-64 h-64 border-4 border-white rounded-lg shadow-2xl"></div>
-                  </div>
-
+                <div className="text-center py-8">
+                  <Camera className="w-16 h-16 text-indigo-600 mx-auto mb-4 animate-pulse" />
+                  <p className="text-lg font-semibold text-gray-900 mb-2">Scan en cours...</p>
+                  <p className="text-sm text-gray-600 mb-4">Pointez la caméra vers le QR code</p>
                   <button
-                    onClick={stopCamera}
-                    className="absolute top-4 right-4 p-3 bg-red-600 text-white rounded-full shadow-lg z-10"
+                    onClick={stopScan}
+                    className="px-6 py-2 bg-red-600 text-white rounded-lg"
                   >
-                    <X className="w-6 h-6" />
+                    Annuler
                   </button>
-                  
-                  <div className="absolute bottom-4 left-0 right-0 px-4">
-                    <p className="text-center text-white text-sm bg-black bg-opacity-60 px-4 py-2 rounded-lg">
-                      📷 Positionnez le QR code dans le cadre blanc
-                    </p>
-                  </div>
                 </div>
               )}
             </div>
@@ -545,6 +474,9 @@ export default function Scan() {
             <div className="flex items-center gap-3 mb-4">
               <Clock className="w-6 h-6 text-indigo-600" />
               <h2 className="text-xl font-bold">Présents aujourd'hui ({todayAttendance.length})</h2>
+              <div className="ml-auto">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+              </div>
             </div>
 
             {todayAttendance.length === 0 ? (
@@ -598,6 +530,12 @@ export default function Scan() {
           </div>
         </>
       )}
+
+      <style jsx>{`
+        body.scanner-active .app-content {
+          visibility: hidden;
+        }
+      `}</style>
     </div>
   )
 }
