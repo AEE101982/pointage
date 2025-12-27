@@ -10,7 +10,7 @@ import Layout from "./components/layout/Layout";
 
 export default function App() {
   return (
-    <HashRouter>
+    <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
 
