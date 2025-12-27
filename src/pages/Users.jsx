@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
-import { UserPlus, Trash2, Edit, Mail, Lock, User as UserIcon, Shield } from 'lucide-react'
+import { UserPlus, Trash2, Mail, Lock, User as UserIcon, Shield } from 'lucide-react'
 
 export default function Users() {
   const [users, setUsers] = useState([])
@@ -8,6 +8,7 @@ export default function Users() {
   const [showModal, setShowModal] = useState(false)
   const [newUser, setNewUser] = useState({ email: '', password: '', role: 'user' })
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
 
   useEffect(() => {
     loadUsers()
@@ -32,6 +33,7 @@ export default function Users() {
   const handleCreateUser = async (e) => {
     e.preventDefault()
     setError('')
+    setSuccess('')
 
     if (!newUser.email || !newUser.password) {
       setError('Email et mot de passe requis')
@@ -39,75 +41,82 @@ export default function Users() {
     }
 
     try {
-      // 1️⃣ CRÉER l'utilisateur dans auth.users
-      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+      console.log('📝 Création utilisateur:', newUser.email)
+      
+      // 1️⃣ Créer l'utilisateur avec signUp (méthode classique)
+      const { data: authData, error: authError } = await supabase.auth.signUp({
         email: newUser.email,
         password: newUser.password,
-        email_confirm: true
+        options: {
+          data: {
+            role: newUser.role  // Stocker le rôle dans les metadata
+          }
+        }
       })
 
       if (authError) {
-        console.error('Erreur auth:', authError)
+        console.error('❌ Erreur auth:', authError)
         throw authError
       }
 
       if (!authData || !authData.user) {
-        throw new Error('Utilisateur créé mais aucune donnée retournée')
+        throw new Error('Aucune donnée utilisateur retournée')
       }
 
-      console.log('✅ Utilisateur créé dans auth.users:', authData.user.id)
+      console.log('✅ User auth créé:', authData.user.id)
 
-      // 2️⃣ CRÉER l'entrée dans public.users avec l'ID récupéré
+      // 2️⃣ Attendre un peu que l'utilisateur soit bien créé
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // 3️⃣ Insérer dans public.users (RLS doit être désactivé sur cette table)
       const { error: publicError } = await supabase
         .from('users')
         .insert([{
-          id: authData.user.id,  // ✅ Utiliser l'ID de auth.users
+          id: authData.user.id,
           email: newUser.email,
           role: newUser.role
         }])
 
       if (publicError) {
-        console.error('Erreur public.users:', publicError)
-        // Si l'insertion échoue, supprimer l'utilisateur de auth
-        await supabase.auth.admin.deleteUser(authData.user.id)
+        console.error('❌ Erreur public.users:', publicError)
         throw publicError
       }
 
-      console.log('✅ Utilisateur créé dans public.users')
-
-      // Réinitialiser et recharger
+      console.log('✅ User public créé')
+      
+      setSuccess(`Utilisateur ${newUser.email} créé avec succès !`)
       setNewUser({ email: '', password: '', role: 'user' })
       setShowModal(false)
-      loadUsers()
+      
+      // Recharger après 1 seconde
+      setTimeout(loadUsers, 1000)
 
     } catch (error) {
-      console.error('Erreur création utilisateur:', error)
-      setError(error.message || 'Erreur lors de la création de l\'utilisateur')
+      console.error('❌ Erreur création:', error)
+      setError(error.message || 'Erreur lors de la création')
     }
   }
 
-  const handleDeleteUser = async (userId) => {
-    if (!confirm('Êtes-vous sûr de vouloir supprimer cet utilisateur ?')) return
+  const handleDeleteUser = async (userId, userEmail) => {
+    if (!confirm(`Êtes-vous sûr de vouloir supprimer ${userEmail} ?`)) return
 
     try {
       // Supprimer de public.users
-      const { error: publicError } = await supabase
+      const { error } = await supabase
         .from('users')
         .delete()
         .eq('id', userId)
 
-      if (publicError) throw publicError
+      if (error) throw error
 
-      // Supprimer de auth.users
-      const { error: authError } = await supabase.auth.admin.deleteUser(userId)
+      console.log('✅ Utilisateur supprimé de public.users')
       
-      if (authError) {
-        console.warn('Erreur suppression auth:', authError)
-      }
-
+      // Note: On ne peut pas supprimer de auth.users sans Service Role Key
+      // L'utilisateur pourra toujours se connecter mais n'aura pas de rôle
+      
       loadUsers()
     } catch (error) {
-      console.error('Erreur suppression:', error)
+      console.error('❌ Erreur suppression:', error)
       alert('Erreur lors de la suppression')
     }
   }
@@ -136,21 +145,28 @@ export default function Users() {
         </button>
       </div>
 
+      {/* Message de succès */}
+      {success && (
+        <div className="p-4 bg-green-50 border border-green-200 rounded-lg text-green-700">
+          {success}
+        </div>
+      )}
+
       {/* Liste des utilisateurs */}
       <div className="bg-white rounded-xl shadow-lg overflow-hidden">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                 Utilisateur
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                 Rôle
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
                 Date de création
               </th>
-              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">
                 Actions
               </th>
             </tr>
@@ -186,8 +202,8 @@ export default function Users() {
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                   <button
-                    onClick={() => handleDeleteUser(user.id)}
-                    className="text-red-600 hover:text-red-900 ml-4"
+                    onClick={() => handleDeleteUser(user.id, user.email)}
+                    className="text-red-600 hover:text-red-900"
                   >
                     <Trash2 className="w-5 h-5" />
                   </button>
@@ -252,6 +268,7 @@ export default function Users() {
                     minLength={6}
                   />
                 </div>
+                <p className="mt-1 text-xs text-gray-500">Minimum 6 caractères</p>
               </div>
 
               <div>
