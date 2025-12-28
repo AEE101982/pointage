@@ -54,8 +54,8 @@ export default function Login({ onLogin }) {
           <div className="flex justify-center mb-6">
             <img 
               src={saharaLogo} 
-              alt="Sahara Mobilier" 
-              className="w-32 h-32 rounded-full shadow-lg object-contain"
+              alt="Logo Sahara Mobilier"
+              className="w-32 h-32 rounded-full shadow-lg object-contain bg-white p-2"
             />
           </div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
