@@ -1,12 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../services/supabase'
-import { Users as UsersIcon, UserPlus, Edit, Trash2, QrCode as QrCodeIcon, Download, DollarSign } from 'lucide-react'
+import { Users as UsersIcon, UserPlus, Edit, Trash2, QrCode as QrCodeIcon, Download, DollarSign, Camera, Upload, X } from 'lucide-react'
 
 export default function Employees() {
   const [employees, setEmployees] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editingEmployee, setEditingEmployee] = useState(null)
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  const [photoPreview, setPhotoPreview] = useState(null)
+  const fileInputRef = useRef(null)
+  
   const [formData, setFormData] = useState({
     first_name: '',
     last_name: '',
@@ -44,6 +48,87 @@ export default function Employees() {
     }
   }
 
+  const handlePhotoSelect = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    // Vérifier le type de fichier
+    if (!file.type.startsWith('image/')) {
+      alert('Veuillez sélectionner une image')
+      return
+    }
+
+    // Vérifier la taille (max 2MB)
+    if (file.size > 2 * 1024 * 1024) {
+      alert('La photo ne doit pas dépasser 2 MB')
+      return
+    }
+
+    try {
+      setUploadingPhoto(true)
+
+      // Créer un aperçu local
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        setPhotoPreview(reader.result)
+      }
+      reader.readAsDataURL(file)
+
+      // Générer un nom de fichier unique
+      const fileExt = file.name.split('.').pop()
+      const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`
+      const filePath = `${fileName}`
+
+      // Upload vers Supabase Storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('employee-photos')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false
+        })
+
+      if (uploadError) throw uploadError
+
+      // Obtenir l'URL publique
+      const { data: { publicUrl } } = supabase.storage
+        .from('employee-photos')
+        .getPublicUrl(filePath)
+
+      // Mettre à jour le formulaire
+      setFormData({ ...formData, photo_url: publicUrl })
+      
+      console.log('✅ Photo uploadée:', publicUrl)
+
+    } catch (error) {
+      console.error('Erreur upload photo:', error)
+      alert('Erreur lors de l\'upload de la photo: ' + error.message)
+    } finally {
+      setUploadingPhoto(false)
+    }
+  }
+
+  const removePhoto = async () => {
+    if (formData.photo_url) {
+      // Supprimer du storage si c'est une URL Supabase
+      if (formData.photo_url.includes('employee-photos')) {
+        try {
+          const fileName = formData.photo_url.split('/').pop()
+          await supabase.storage
+            .from('employee-photos')
+            .remove([fileName])
+        } catch (error) {
+          console.error('Erreur suppression photo:', error)
+        }
+      }
+    }
+    
+    setFormData({ ...formData, photo_url: '' })
+    setPhotoPreview(null)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
   const generateQRCode = (employeeId) => {
     return `EMP${employeeId.toString().padStart(4, '0')}`
   }
@@ -52,7 +137,6 @@ export default function Employees() {
     e.preventDefault()
 
     try {
-      // Calculer le taux horaire basé sur 191h/mois (temps de travail légal au Maroc)
       const monthlySalary = parseFloat(formData.monthly_salary) || 0
       const hourlyRate = monthlySalary / 191
       const overtimeRate = parseFloat(formData.overtime_rate) || (hourlyRate * 1.5)
@@ -93,6 +177,7 @@ export default function Employees() {
 
       setShowModal(false)
       setEditingEmployee(null)
+      setPhotoPreview(null)
       setFormData({
         first_name: '',
         last_name: '',
@@ -119,6 +204,15 @@ export default function Employees() {
     if (!confirm('Êtes-vous sûr de vouloir supprimer cet employé ?')) return
 
     try {
+      // Récupérer l'employé pour supprimer sa photo
+      const employee = employees.find(e => e.id === id)
+      if (employee?.photo_url && employee.photo_url.includes('employee-photos')) {
+        const fileName = employee.photo_url.split('/').pop()
+        await supabase.storage
+          .from('employee-photos')
+          .remove([fileName])
+      }
+
       const { error } = await supabase
         .from('employees')
         .delete()
@@ -149,11 +243,13 @@ export default function Employees() {
       contract_type: employee.contract_type || 'CDI',
       contract_end_date: employee.contract_end_date || ''
     })
+    setPhotoPreview(employee.photo_url || null)
     setShowModal(true)
   }
 
   const openCreateModal = () => {
     setEditingEmployee(null)
+    setPhotoPreview(null)
     setFormData({
       first_name: '',
       last_name: '',
@@ -233,13 +329,13 @@ export default function Employees() {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Photo</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Matricule</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nom</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Poste</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Contrat</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Salaire</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Taux HS</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date embauche</th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
               </tr>
             </thead>
@@ -256,6 +352,19 @@ export default function Employees() {
                   const contractStatus = getContractStatus(employee)
                   return (
                     <tr key={employee.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {employee.photo_url ? (
+                          <img 
+                            src={employee.photo_url} 
+                            alt={`${employee.first_name} ${employee.last_name}`}
+                            className="w-12 h-12 rounded-full object-cover border-2 border-gray-200"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center">
+                            <UsersIcon className="w-6 h-6 text-gray-400" />
+                          </div>
+                        )}
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                         {employee.employee_id}
                       </td>
@@ -278,9 +387,6 @@ export default function Employees() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-orange-600 font-semibold">
                         {employee.overtime_rate ? `${parseFloat(employee.overtime_rate).toFixed(2)} MAD/h` : '-'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {employee.hire_date ? new Date(employee.hire_date).toLocaleDateString('fr-FR') : '-'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <button
@@ -322,6 +428,64 @@ export default function Employees() {
               </h2>
               
               <form onSubmit={handleSubmit} className="space-y-6">
+                {/* Photo */}
+                <div className="border-b pb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <Camera className="w-5 h-5" />
+                    Photo de profil
+                  </h3>
+                  
+                  <div className="flex items-center gap-6">
+                    {/* Aperçu */}
+                    <div className="flex-shrink-0">
+                      {photoPreview ? (
+                        <div className="relative">
+                          <img 
+                            src={photoPreview} 
+                            alt="Aperçu" 
+                            className="w-32 h-32 rounded-full object-cover border-4 border-indigo-100"
+                          />
+                          <button
+                            type="button"
+                            onClick={removePhoto}
+                            className="absolute -top-2 -right-2 p-1 bg-red-600 text-white rounded-full hover:bg-red-700"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="w-32 h-32 rounded-full bg-gray-100 flex items-center justify-center border-4 border-gray-200">
+                          <Camera className="w-12 h-12 text-gray-400" />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Upload */}
+                    <div className="flex-1">
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handlePhotoSelect}
+                        className="hidden"
+                        id="photo-upload"
+                      />
+                      <label
+                        htmlFor="photo-upload"
+                        className={`inline-flex items-center gap-2 px-4 py-2 border border-indigo-600 text-indigo-600 rounded-lg hover:bg-indigo-50 cursor-pointer transition ${
+                          uploadingPhoto ? 'opacity-50 cursor-not-allowed' : ''
+                        }`}
+                      >
+                        <Upload className="w-5 h-5" />
+                        {uploadingPhoto ? 'Upload en cours...' : 'Choisir une photo'}
+                      </label>
+                      <p className="text-xs text-gray-500 mt-2">
+                        JPG, PNG ou GIF. Max 2 MB.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Informations personnelles */}
                 <div className="border-b pb-4">
                   <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
@@ -486,6 +650,7 @@ export default function Employees() {
                     onClick={() => {
                       setShowModal(false)
                       setEditingEmployee(null)
+                      setPhotoPreview(null)
                     }}
                     className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
                   >
@@ -493,7 +658,8 @@ export default function Employees() {
                   </button>
                   <button
                     type="submit"
-                    className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                    disabled={uploadingPhoto}
+                    className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
                   >
                     {editingEmployee ? 'Mettre à jour' : 'Créer'}
                   </button>
