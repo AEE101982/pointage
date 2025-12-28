@@ -5,19 +5,16 @@ import Login from './pages/Login'
 import Layout from './components/layout/Layout'
 import Dashboard from './pages/Dashboard'
 import Employees from './pages/Employees'
-import Scanner from './pages/Scanner'
 import Reports from './pages/Reports'
 import MonthlyReports from './pages/MonthlyReports'
 import SalaryAdvances from './pages/SalaryAdvances'
 import Users from './pages/Users'
-import Settings from './pages/Settings'
 
 function App() {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Vérifier la session au chargement
     checkSession()
   }, [])
 
@@ -43,7 +40,7 @@ function App() {
     }
   }
 
-  // IMPORTANT : Fonction handleLogin correctement définie
+  // FONCTION CRITIQUE POUR LOGIN
   const handleLogin = (userData) => {
     console.log('handleLogin appelé avec:', userData)
     setUser(userData)
@@ -79,15 +76,11 @@ function App() {
         <Routes>
           <Route path="/" element={<Dashboard user={user} />} />
           <Route path="/employees" element={<Employees />} />
-          <Route path="/scanner" element={<Scanner user={user} />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/monthly-reports" element={<MonthlyReports />} />
           <Route path="/salary-advances" element={<SalaryAdvances user={user} />} />
           {user.role === 'admin' && (
-            <>
-              <Route path="/users" element={<Users />} />
-              <Route path="/settings" element={<Settings />} />
-            </>
+            <Route path="/users" element={<Users />} />
           )}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
