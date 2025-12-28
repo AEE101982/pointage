@@ -2,48 +2,86 @@ import { useState } from 'react'
 import { supabase } from '../services/supabase'
 import { Lock, Mail } from 'lucide-react'
 
-// Import conditionnel du logo
-let saharaLogo
-try {
-  saharaLogo = new URL('../assets/sahara-logo.png', import.meta.url).href
-} catch (e) {
-  saharaLogo = null
-}
-
 export default function Login({ onLogin }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  // DEBUGGING
+  console.log('Login component - onLogin type:', typeof onLogin)
+  console.log('Login component - onLogin:', onLogin)
+
   const handleLogin = async (e) => {
     e.preventDefault()
     setError('')
     setLoading(true)
 
+    console.log('handleLogin started')
+
     try {
+      // Étape 1 : Connexion Supabase Auth
+      console.log('Étape 1: Connexion avec email:', email)
+      
       const { data, error: authError } = await supabase.auth.signInWithPassword({
         email,
         password
       })
 
-      if (authError) throw authError
+      console.log('Auth response:', data, authError)
+
+      if (authError) {
+        console.error('Auth error:', authError)
+        throw authError
+      }
 
       if (data.user) {
+        console.log('User authenticated:', data.user.id)
+        
+        // Étape 2 : Récupérer les données utilisateur
+        console.log('Étape 2: Récupération userData')
+        
         const { data: userData, error: userError } = await supabase
           .from('users')
           .select('*')
           .eq('id', data.user.id)
           .single()
 
-        if (userError || !userData) {
+        console.log('User data:', userData, userError)
+
+        if (userError) {
+          console.error('User data error:', userError)
+          throw new Error('Utilisateur non trouvé dans la base de données')
+        }
+
+        if (!userData) {
+          console.error('No user data found')
           throw new Error('Utilisateur non autorisé')
         }
 
+        // Étape 3 : Appeler onLogin
+        console.log('Étape 3: Appel onLogin avec userData:', userData)
+        console.log('onLogin type avant appel:', typeof onLogin)
+        
+        if (typeof onLogin !== 'function') {
+          console.error('ERREUR: onLogin n\'est pas une fonction!')
+          console.error('onLogin value:', onLogin)
+          throw new Error('Erreur de configuration - onLogin invalide')
+        }
+
+        // Appel de la fonction
         onLogin(userData)
+        
+        console.log('onLogin appelé avec succès')
       }
     } catch (err) {
       console.error('Erreur login:', err)
+      console.error('Error details:', {
+        message: err.message,
+        name: err.name,
+        stack: err.stack
+      })
+      
       setError(err.message === 'Invalid login credentials' 
         ? 'Email ou mot de passe incorrect' 
         : err.message)
@@ -58,22 +96,12 @@ export default function Login({ onLogin }) {
         {/* Logo Sahara Mobilier */}
         <div className="text-center mb-8">
           <div className="flex justify-center mb-6">
-            {saharaLogo ? (
-              // Si le logo existe, l'afficher
-              <img 
-                src={saharaLogo} 
-                alt="Logo Sahara Mobilier"
-                className="w-32 h-32 rounded-full shadow-lg object-contain bg-white p-2"
-              />
-            ) : (
-              // Sinon, afficher un logo par défaut avec initiales
-              <div className="w-32 h-32 rounded-full shadow-lg bg-gradient-to-br from-red-800 to-red-900 flex items-center justify-center">
-                <div className="text-center">
-                  <div className="text-4xl font-bold text-white">SM</div>
-                  <div className="text-xs text-red-100 mt-1">USINE</div>
-                </div>
+            <div className="w-32 h-32 rounded-full shadow-lg bg-gradient-to-br from-red-800 to-red-900 flex items-center justify-center">
+              <div className="text-center">
+                <div className="text-4xl font-bold text-white">SM</div>
+                <div className="text-xs text-red-100 mt-1">USINE</div>
               </div>
-            )}
+            </div>
           </div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
             Système de Gestion RH
