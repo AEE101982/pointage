@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
-import { Users, UserPlus, Edit2, Trash2, Camera, Upload } from 'lucide-react'
+import { Users, UserPlus, Edit2, Trash2, QrCode, Download } from 'lucide-react'
 
 export default function Employees() {
   const [employees, setEmployees] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
+  const [showQRModal, setShowQRModal] = useState(false)
+  const [selectedEmployee, setSelectedEmployee] = useState(null)
   const [editingEmployee, setEditingEmployee] = useState(null)
   const [error, setError] = useState('')
   
@@ -19,7 +21,8 @@ export default function Employees() {
     hourly_rate: '',
     contract_type: 'CDI',
     hire_date: '',
-    photo_url: ''
+    photo_url: '',
+    qr_code: ''
   })
 
   useEffect(() => {
@@ -29,6 +32,7 @@ export default function Employees() {
   const loadEmployees = async () => {
     try {
       setLoading(true)
+      // SELECT * pour charger toutes les colonnes incluant qr_code
       const { data, error } = await supabase
         .from('employees')
         .select('*')
@@ -36,6 +40,7 @@ export default function Employees() {
 
       if (error) throw error
       
+      console.log('Employés chargés avec QR codes:', data)
       setEmployees(data || [])
     } catch (error) {
       console.error('Erreur chargement employés:', error)
@@ -51,7 +56,6 @@ export default function Employees() {
 
     try {
       if (editingEmployee) {
-        // Modification
         const { error } = await supabase
           .from('employees')
           .update(formData)
@@ -60,7 +64,6 @@ export default function Employees() {
         if (error) throw error
         
       } else {
-        // Création
         const { error } = await supabase
           .from('employees')
           .insert([formData])
@@ -90,7 +93,8 @@ export default function Employees() {
       hourly_rate: employee.hourly_rate || '',
       contract_type: employee.contract_type || 'CDI',
       hire_date: employee.hire_date || '',
-      photo_url: employee.photo_url || ''
+      photo_url: employee.photo_url || '',
+      qr_code: employee.qr_code || ''
     })
     setShowModal(true)
   }
@@ -114,6 +118,36 @@ export default function Employees() {
     }
   }
 
+  const showQRCode = (employee) => {
+    setSelectedEmployee(employee)
+    setShowQRModal(true)
+  }
+
+  const downloadQRCode = (employee) => {
+    if (!employee.qr_code) {
+      alert('Aucun QR code disponible pour cet employé')
+      return
+    }
+
+    // Si c'est une URL
+    if (employee.qr_code.startsWith('http')) {
+      window.open(employee.qr_code, '_blank')
+    } 
+    // Si c'est du base64
+    else if (employee.qr_code.startsWith('data:image')) {
+      const link = document.createElement('a')
+      link.href = employee.qr_code
+      link.download = `qr_code_${employee.matricule}.png`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    }
+    // Si c'est juste le texte du QR
+    else {
+      alert(`QR Code: ${employee.qr_code}`)
+    }
+  }
+
   const resetForm = () => {
     setFormData({
       matricule: '',
@@ -125,7 +159,8 @@ export default function Employees() {
       hourly_rate: '',
       contract_type: 'CDI',
       hire_date: '',
-      photo_url: ''
+      photo_url: '',
+      qr_code: ''
     })
     setEditingEmployee(null)
     setError('')
@@ -174,13 +209,14 @@ export default function Employees() {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nom</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Département</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Salaire</th>
+              <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">QR Code</th>
               <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {employees.length === 0 ? (
               <tr>
-                <td colSpan="5" className="px-6 py-8 text-center text-gray-500">
+                <td colSpan="6" className="px-6 py-8 text-center text-gray-500">
                   <Users className="mx-auto h-12 w-12 text-gray-400 mb-2" />
                   Aucun employé
                 </td>
@@ -216,6 +252,28 @@ export default function Employees() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     {employee.monthly_salary ? `${parseFloat(employee.monthly_salary).toLocaleString()} MAD` : '-'}
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center">
+                    {employee.qr_code ? (
+                      <div className="flex justify-center gap-2">
+                        <button
+                          onClick={() => showQRCode(employee)}
+                          className="text-indigo-600 hover:text-indigo-900"
+                          title="Voir QR Code"
+                        >
+                          <QrCode className="w-5 h-5" />
+                        </button>
+                        <button
+                          onClick={() => downloadQRCode(employee)}
+                          className="text-green-600 hover:text-green-900"
+                          title="Télécharger QR Code"
+                        >
+                          <Download className="w-5 h-5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-gray-400 text-xs">Non disponible</span>
+                    )}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <button
                       onClick={() => handleEdit(employee)}
@@ -237,7 +295,58 @@ export default function Employees() {
         </table>
       </div>
 
-      {/* Modal */}
+      {/* Modal QR Code */}
+      {showQRModal && selectedEmployee && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">
+              QR Code - {selectedEmployee.first_name} {selectedEmployee.last_name}
+            </h2>
+            
+            <div className="text-center mb-4">
+              <p className="text-sm text-gray-600 mb-4">Matricule: {selectedEmployee.matricule}</p>
+              
+              {selectedEmployee.qr_code ? (
+                // Si c'est une URL ou du base64
+                (selectedEmployee.qr_code.startsWith('http') || selectedEmployee.qr_code.startsWith('data:image')) ? (
+                  <img 
+                    src={selectedEmployee.qr_code} 
+                    alt="QR Code"
+                    className="mx-auto w-64 h-64 object-contain border-4 border-indigo-200 rounded-lg shadow-lg"
+                  />
+                ) : (
+                  // Si c'est juste du texte
+                  <div className="bg-gray-100 p-6 rounded-lg">
+                    <p className="font-mono text-sm break-all">{selectedEmployee.qr_code}</p>
+                  </div>
+                )
+              ) : (
+                <p className="text-red-600">QR Code non disponible</p>
+              )}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowQRModal(false)}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+              >
+                Fermer
+              </button>
+              {selectedEmployee.qr_code && (
+                <button
+                  onClick={() => downloadQRCode(selectedEmployee)}
+                  className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                >
+                  <Download className="w-5 h-5 inline mr-2" />
+                  Télécharger
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Formulaire */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
