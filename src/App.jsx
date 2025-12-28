@@ -1,13 +1,14 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
-import Employees from "./pages/Employees";
-import Scan from "./pages/Scan";
-import Reports from "./pages/Reports";
-import Users from "./pages/Users";
-import Settings from "./pages/Settings";
-import ProtectedRoute from "./components/auth/ProtectedRoute";
-import Layout from "./components/layout/Layout";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
+import Login from "./pages/Login"
+import Dashboard from "./pages/Dashboard"
+import Employees from "./pages/Employees"
+import Scan from "./pages/Scan"
+import Reports from "./pages/Reports"
+import MonthlyReports from "./pages/MonthlyReports"  // ✅ AJOUTÉ
+import Users from "./pages/Users"
+import Settings from "./pages/Settings"
+import ProtectedRoute from "./components/auth/ProtectedRoute"
+import Layout from "./components/layout/Layout"
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
             <Route path="/scan" element={<Scan />} />
             <Route path="/employees" element={<Employees />} />
             <Route path="/reports" element={<Reports />} />
+            <Route path="/monthly-reports" element={<MonthlyReports />} />  {/* ✅ AJOUTÉ */}
             <Route path="/users" element={<Users />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
@@ -28,5 +30,5 @@ export default function App() {
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     </BrowserRouter>
-  );
+  )
 }
