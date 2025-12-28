@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
-import { Users as UsersIcon, UserPlus, Trash2, Shield, User, AlertCircle } from 'lucide-react'
+import { Users as UsersIcon, UserPlus, Trash2, Shield, User, AlertCircle, ExternalLink } from 'lucide-react'
 
 export default function Users() {
   const [users, setUsers] = useState([])
@@ -8,6 +8,8 @@ export default function Users() {
   const [showModal, setShowModal] = useState(false)
   const [error, setError] = useState('')
   const [currentUser, setCurrentUser] = useState(null)
+  const [showInstructions, setShowInstructions] = useState(false)
+  const [newUserData, setNewUserData] = useState(null)
   
   const [newUser, setNewUser] = useState({
     email: '',
@@ -82,81 +84,18 @@ export default function Users() {
       return
     }
 
-    try {
-      console.log('📧 Création utilisateur:', newUser.email)
+    // Sauvegarder les données pour les instructions
+    setNewUserData({
+      email: newUser.email,
+      password: newUser.password,
+      full_name: newUser.full_name,
+      role: newUser.role
+    })
 
-      // ✅ SOLUTION 1 : Vérifier si existe déjà
-      const { data: existingUser } = await supabase
-        .from('users')
-        .select('email')
-        .eq('email', newUser.email)
-        .maybeSingle()
-
-      if (existingUser) {
-        throw new Error('❌ Cet email existe déjà')
-      }
-
-      // ✅ SOLUTION 2 : Créer via Edge Function (si configurée)
-      // OU utiliser une approche alternative
-
-      // Pour l'instant, on va créer uniquement dans users
-      // et demander à l'utilisateur de se créer un compte via login
-      
-      const tempPassword = newUser.password
-      
-      // Générer un UUID temporaire
-      const tempId = crypto.randomUUID()
-
-      // Créer dans la table users avec un flag temporaire
-      const { error: dbError } = await supabase
-        .from('users')
-        .insert([{
-          id: tempId,
-          email: newUser.email,
-          full_name: newUser.full_name,
-          role: newUser.role
-        }])
-
-      if (dbError) {
-        console.error('❌ Erreur DB:', dbError)
-        throw new Error(`❌ Erreur base de données: ${dbError.message}`)
-      }
-
-      console.log('✅ Utilisateur créé dans la table')
-
-      // Afficher le message avec les instructions
-      const instructions = `
-✅ Utilisateur créé avec succès !
-
-📧 Email: ${newUser.email}
-🔑 Mot de passe temporaire: ${tempPassword}
-
-⚠️ IMPORTANT :
-L'utilisateur doit se connecter une première fois pour activer son compte.
-
-Instructions à transmettre à l'utilisateur :
-1. Aller sur la page de connexion
-2. Email : ${newUser.email}
-3. Mot de passe : ${tempPassword}
-4. Première connexion → Compte activé
-
-Alternative :
-Allez sur Supabase Dashboard > Authentication > Users
-Cliquez "Invite user" et entrez : ${newUser.email}
-      `
-
-      // Rafraîchir
-      await loadUsers()
-      
-      setShowModal(false)
-      setNewUser({ email: '', password: '', full_name: '', role: 'user' })
-      
-      alert(instructions)
-
-    } catch (error) {
-      console.error('❌ Erreur complète:', error)
-      setError(error.message || 'Erreur inconnue')
-    }
+    // Afficher les instructions
+    setShowModal(false)
+    setShowInstructions(true)
+    setNewUser({ email: '', password: '', full_name: '', role: 'user' })
   }
 
   const handleDeleteUser = async (userId, userEmail) => {
@@ -165,7 +104,7 @@ Cliquez "Invite user" et entrez : ${newUser.email}
       return
     }
 
-    if (!confirm(`Êtes-vous sûr de vouloir supprimer ${userEmail} ?`)) return
+    if (!confirm(`Êtes-vous sûr de vouloir supprimer ${userEmail} ?\n\n⚠️ N'oubliez pas de le supprimer aussi dans:\nSupabase > Authentication > Users`)) return
 
     try {
       // Supprimer de la table users
@@ -176,11 +115,8 @@ Cliquez "Invite user" et entrez : ${newUser.email}
 
       if (dbError) throw dbError
 
-      // Note : Pour supprimer de auth.users, il faut le faire manuellement
-      // via le Dashboard Supabase > Authentication > Users
-
       await loadUsers()
-      alert('✅ Utilisateur supprimé de la table users\n\n⚠️ Pour supprimer complètement:\nSupabase > Authentication > Users > Supprimer manuellement')
+      alert('✅ Utilisateur supprimé de la table users\n\n⚠️ Pour suppression complète:\nSupabase > Authentication > Users > Supprimer')
       
     } catch (error) {
       console.error('Erreur suppression:', error)
@@ -198,17 +134,17 @@ Cliquez "Invite user" et entrez : ${newUser.email}
 
   return (
     <div className="space-y-6">
-      {/* Avertissement Admin API */}
-      <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 rounded-lg">
+      {/* Instructions pour créer des utilisateurs */}
+      <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-lg">
         <div className="flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5" />
-          <div>
-            <p className="font-medium text-yellow-900">Mode sans Admin API</p>
-            <p className="text-sm text-yellow-700 mt-1">
-              Les nouveaux utilisateurs doivent se connecter une première fois pour activer leur compte.
-              <br />
-              <strong>Alternative :</strong> Créez les utilisateurs via Supabase Dashboard > Authentication > Users > Invite user
-            </p>
+          <AlertCircle className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
+          <div className="text-sm">
+            <p className="font-medium text-blue-900 mb-2">Comment créer un utilisateur</p>
+            <ol className="text-blue-700 space-y-1 ml-4 list-decimal">
+              <li>Cliquez sur "Nouvel utilisateur" pour obtenir les instructions</li>
+              <li>Suivez le guide pour créer via Supabase Dashboard</li>
+              <li>L'utilisateur apparaîtra automatiquement dans la liste</li>
+            </ol>
           </div>
         </div>
       </div>
@@ -309,7 +245,97 @@ Cliquez "Invite user" et entrez : ${newUser.email}
         </table>
       </div>
 
-      {/* Modal Création */}
+      {/* Modal Instructions */}
+      {showInstructions && newUserData && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+            <h2 className="text-2xl font-bold text-gray-900 mb-6">📋 Instructions : Créer l'utilisateur</h2>
+            
+            <div className="space-y-6">
+              {/* Étape 1 */}
+              <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded">
+                <h3 className="font-bold text-blue-900 mb-2">ÉTAPE 1 : Créer dans Supabase Authentication</h3>
+                <ol className="text-sm text-blue-800 space-y-2 ml-4 list-decimal">
+                  <li>Ouvrez Supabase Dashboard → <strong>Authentication</strong> → <strong>Users</strong></li>
+                  <li>Cliquez <strong>"Add user"</strong> → <strong>"Create new user"</strong></li>
+                  <li>Remplissez :
+                    <div className="bg-white p-3 rounded mt-2 font-mono text-xs">
+                      <div>Email: <strong className="text-blue-600">{newUserData.email}</strong></div>
+                      <div>Password: <strong className="text-blue-600">{newUserData.password}</strong></div>
+                      <div>Auto Confirm User: <strong className="text-green-600">✅ COCHER</strong></div>
+                    </div>
+                  </li>
+                  <li>Cliquez <strong>"Create user"</strong></li>
+                  <li className="text-red-600 font-semibold">⚠️ IMPORTANT : Copiez l'ID généré (ex: abc-123-def...)</li>
+                </ol>
+              </div>
+
+              {/* Étape 2 */}
+              <div className="bg-green-50 border-l-4 border-green-500 p-4 rounded">
+                <h3 className="font-bold text-green-900 mb-2">ÉTAPE 2 : Ajouter dans la table users</h3>
+                <ol className="text-sm text-green-800 space-y-2 ml-4 list-decimal">
+                  <li>Supabase Dashboard → <strong>SQL Editor</strong></li>
+                  <li>Copiez ce script et <strong>remplacez l'ID</strong> par celui copié à l'étape 1 :</li>
+                </ol>
+                <div className="bg-gray-900 text-gray-100 p-4 rounded mt-2 font-mono text-xs overflow-x-auto">
+                  <pre>{`INSERT INTO users (id, email, full_name, role)
+VALUES (
+  'REMPLACEZ-PAR-ID-COPIÉ',
+  '${newUserData.email}',
+  '${newUserData.full_name}',
+  '${newUserData.role}'
+);`}</pre>
+                </div>
+                <p className="text-xs text-green-700 mt-2">💡 Exemple d'ID : a1b2c3d4-e5f6-7890-abcd-ef1234567890</p>
+              </div>
+
+              {/* Étape 3 */}
+              <div className="bg-purple-50 border-l-4 border-purple-500 p-4 rounded">
+                <h3 className="font-bold text-purple-900 mb-2">ÉTAPE 3 : Vérification</h3>
+                <p className="text-sm text-purple-800 mb-2">Exécutez ce script pour vérifier :</p>
+                <div className="bg-gray-900 text-gray-100 p-4 rounded font-mono text-xs overflow-x-auto">
+                  <pre>{`SELECT * FROM users WHERE email = '${newUserData.email}';`}</pre>
+                </div>
+                <p className="text-xs text-purple-700 mt-2">✅ L'utilisateur doit apparaître dans la liste automatiquement</p>
+              </div>
+
+              {/* Info supplémentaire */}
+              <div className="bg-yellow-50 border border-yellow-200 rounded p-4">
+                <p className="text-sm text-yellow-800">
+                  <strong>📌 Mot de passe à transmettre :</strong> {newUserData.password}
+                </p>
+                <p className="text-xs text-yellow-700 mt-1">
+                  L'utilisateur peut maintenant se connecter avec ces identifiants.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  setShowInstructions(false)
+                  setNewUserData(null)
+                }}
+                className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+              >
+                Fermer
+              </button>
+              <button
+                onClick={() => {
+                  loadUsers()
+                  setShowInstructions(false)
+                  setNewUserData(null)
+                }}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+              >
+                🔄 Rafraîchir la liste
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Formulaire */}
       {showModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
@@ -335,7 +361,7 @@ Cliquez "Invite user" et entrez : ${newUser.email}
                   onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })}
                   required
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                  placeholder="Ahmed El Alami"
+                  placeholder="Jaouad El Alami"
                 />
               </div>
 
@@ -355,7 +381,7 @@ Cliquez "Invite user" et entrez : ${newUser.email}
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Mot de passe temporaire *
+                  Mot de passe *
                 </label>
                 <input
                   type="text"
@@ -366,9 +392,6 @@ Cliquez "Invite user" et entrez : ${newUser.email}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
                   placeholder="Min 6 caractères"
                 />
-                <p className="text-xs text-gray-500 mt-1">
-                  L'utilisateur devra se connecter avec ce mot de passe
-                </p>
               </div>
 
               <div>
@@ -401,7 +424,7 @@ Cliquez "Invite user" et entrez : ${newUser.email}
                   type="submit"
                   className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
                 >
-                  Créer
+                  Voir instructions
                 </button>
               </div>
             </form>
