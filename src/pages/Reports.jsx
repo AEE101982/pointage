@@ -1,520 +1,375 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
-import { Calendar, Download, Copy, FileSpreadsheet } from 'lucide-react'
-import * as XLSX from 'xlsx'
+import { Calendar, Download, Filter, Clock } from 'lucide-react'
 
 export default function Reports() {
-  const [reportType, setReportType] = useState('daily')
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0])
-  const [selectedWeek, setSelectedWeek] = useState('')
-  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7))
-  const [reportData, setReportData] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [employees, setEmployees] = useState([])
+  const [attendanceData, setAttendanceData] = useState([])
+  const [loading, setLoading] = useState(true)
+  
+  const getLocalDate = () => {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    const day = String(now.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+  
+  const [selectedDate, setSelectedDate] = useState(getLocalDate())
+  const [filterDepartment, setFilterDepartment] = useState('all')
+  const [departments, setDepartments] = useState([])
 
   useEffect(() => {
-    loadEmployees()
-    generateReport()
-  }, [reportType, selectedDate, selectedWeek, selectedMonth])
+    loadDepartments()
+  }, [])
 
-  const loadEmployees = async () => {
-    const { data } = await supabase.from('employees').select('*')
-    setEmployees(data || [])
+  useEffect(() => {
+    loadAttendance()
+    
+    const channel = supabase
+      .channel('reports-attendance-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'attendance',
+          filter: `date=eq.${selectedDate}`
+        },
+        (payload) => {
+          console.log('🔄 Mise à jour rapport temps réel')
+          loadAttendance()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [selectedDate, filterDepartment])
+
+  const loadDepartments = async () => {
+    try {
+      const { data } = await supabase
+        .from('employees')
+        .select('department')
+        .not('department', 'is', null)
+
+      const uniqueDepts = [...new Set(data?.map(e => e.department) || [])]
+      setDepartments(uniqueDepts)
+    } catch (error) {
+      console.error('Erreur chargement départements:', error)
+    }
   }
 
-  const generateReport = async () => {
-    setLoading(true)
+  const loadAttendance = async () => {
     try {
-      let data = []
+      setLoading(true)
+      
+      console.log('📅 Recherche pour la date:', selectedDate)
+      
+      // ✅ CORRECTION : Ne pas chercher employee_id dans employees
+      let query = supabase
+        .from('attendance')
+        .select(`
+          *,
+          employees (
+            id,
+            first_name,
+            last_name,
+            department,
+            qr_code
+          )
+        `)
+        .eq('date', selectedDate)
+        .order('created_at', { ascending: true })
 
-      if (reportType === 'daily') {
-        data = await getDailyReport(selectedDate)
-      } else if (reportType === 'weekly') {
-        data = await getWeeklyReport(selectedWeek)
-      } else if (reportType === 'monthly') {
-        data = await getMonthlyReport(selectedMonth)
+      const { data, error } = await query
+
+      if (error) {
+        console.error('❌ Erreur SQL:', error)
+        throw error
       }
 
-      setReportData(data)
+      console.log('✅ Pointages trouvés:', data?.length || 0)
+
+      let filteredData = data || []
+
+      if (filterDepartment !== 'all') {
+        filteredData = filteredData.filter(
+          record => record.employees?.department === filterDepartment
+        )
+      }
+
+      setAttendanceData(filteredData)
     } catch (error) {
-      console.error('Erreur génération rapport:', error)
+      console.error('Erreur chargement présences:', error)
     } finally {
       setLoading(false)
     }
   }
 
-  const getDailyReport = async (date) => {
-    const { data: attendance } = await supabase
-      .from('attendance')
-      .select('*, employees(first_name, last_name, department, matricule)')
-      .eq('date', date)
-      .order('check_in', { ascending: true })
-
-    // Ajouter les absents
-    const presentIds = attendance?.map(a => a.employee_id) || []
-    const absent = employees
-      .filter(emp => !presentIds.includes(emp.id))
-      .map(emp => ({
-        employee_name: `${emp.first_name} ${emp.last_name}`,
-        matricule: emp.matricule,
-        department: emp.department,
-        status: 'absent',
-        check_in: '-',
-        check_out: '-',
-        hours_worked: '0'
-      }))
-
-    const present = attendance?.map(a => ({
-      employee_name: `${a.employees.first_name} ${a.employees.last_name}`,
-      matricule: a.employees.matricule,
-      department: a.employees.department,
-      status: a.status,
-      check_in: a.check_in || '-',
-      check_out: a.check_out || '-',
-      hours_worked: a.hours_worked || '0',
-      overtime_hours: a.overtime_hours || '0'
-    })) || []
-
-    return [...present, ...absent]
-  }
-
-  const getWeeklyReport = async (weekStart) => {
-    if (!weekStart) return []
-
-    const start = new Date(weekStart)
-    const end = new Date(start)
-    end.setDate(end.getDate() + 6)
-
-    const { data: attendance } = await supabase
-      .from('attendance')
-      .select('*, employees(first_name, last_name, matricule)')
-      .gte('date', start.toISOString().split('T')[0])
-      .lte('date', end.toISOString().split('T')[0])
-
-    // Grouper par employé
-    const byEmployee = {}
-    employees.forEach(emp => {
-      byEmployee[emp.id] = {
-        employee_name: `${emp.first_name} ${emp.last_name}`,
-        matricule: emp.matricule,
-        days: {},
-        total_hours: 0,
-        total_overtime: 0,
-        days_present: 0
-      }
-    })
-
-    attendance?.forEach(a => {
-      if (byEmployee[a.employee_id]) {
-        byEmployee[a.employee_id].days[a.date] = {
-          status: a.status,
-          hours: parseFloat(a.hours_worked || 0)
-        }
-        byEmployee[a.employee_id].total_hours += parseFloat(a.hours_worked || 0)
-        byEmployee[a.employee_id].total_overtime += parseFloat(a.overtime_hours || 0)
-        if (a.status === 'present' || a.status === 'late') {
-          byEmployee[a.employee_id].days_present++
-        }
-      }
-    })
-
-    return Object.values(byEmployee)
-  }
-
-  const getMonthlyReport = async (month) => {
-    const { data: attendance } = await supabase
-      .from('attendance')
-      .select('*, employees(first_name, last_name, matricule, department)')
-      .gte('date', `${month}-01`)
-      .lt('date', `${month}-32`)
-
-    // Compter les jours ouvrables du mois (Lun-Ven)
-    const year = parseInt(month.split('-')[0])
-    const monthNum = parseInt(month.split('-')[1])
-    const daysInMonth = new Date(year, monthNum, 0).getDate()
-    let workingDays = 0
-    
-    for (let day = 1; day <= daysInMonth; day++) {
-      const date = new Date(year, monthNum - 1, day)
-      const dayOfWeek = date.getDay()
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Pas dimanche ni samedi
-        workingDays++
-      }
-    }
-
-    // Grouper par employé
-    const byEmployee = {}
-    employees.forEach(emp => {
-      byEmployee[emp.id] = {
-        employee_name: `${emp.first_name} ${emp.last_name}`,
-        matricule: emp.matricule,
-        department: emp.department,
-        working_days: workingDays,
-        days_worked: 0,
-        days_present: 0,
-        days_late: 0,
-        days_absent: 0,
-        total_hours: 0,
-        total_overtime: 0,
-        attendance_rate: 0,
-        late_minutes: 0
-      }
-    })
-
-    // Calculer les présences
-    attendance?.forEach(a => {
-      if (byEmployee[a.employee_id]) {
-        const empId = a.employee_id
-
-        byEmployee[empId].days_worked++
-        byEmployee[empId].total_hours += parseFloat(a.hours_worked || 0)
-        byEmployee[empId].total_overtime += parseFloat(a.overtime_hours || 0)
-        
-        if (a.status === 'present') {
-          byEmployee[empId].days_present++
-        } else if (a.status === 'late') {
-          byEmployee[empId].days_late++
-          
-          // Calculer les minutes de retard
-          if (a.check_in) {
-            const [hours, minutes] = a.check_in.split(':').map(Number)
-            const arrivalMinutes = hours * 60 + minutes
-            const expectedMinutes = 9 * 60 // 9h00
-            if (arrivalMinutes > expectedMinutes) {
-              byEmployee[empId].late_minutes += (arrivalMinutes - expectedMinutes)
-            }
-          }
-        }
-      }
-    })
-
-    // Calculer les absences (jours ouvrables - jours travaillés)
-    Object.keys(byEmployee).forEach(empId => {
-      const emp = byEmployee[empId]
-      emp.days_absent = workingDays - emp.days_worked
-      
-      // Taux de présence
-      if (workingDays > 0) {
-        emp.attendance_rate = ((emp.days_worked / workingDays) * 100).toFixed(1)
-      }
-    })
-
-    return Object.values(byEmployee)
-  }
-
-  const exportToExcel = () => {
-    let ws_data = []
-
-    if (reportType === 'daily') {
-      ws_data = [
-        ['Rapport Journalier - ' + selectedDate],
-        [],
-        ['Matricule', 'Nom', 'Département', 'Arrivée', 'Départ', 'Heures', 'Heures Sup.', 'Statut'],
-        ...reportData.map(r => [
-          r.matricule,
-          r.employee_name,
-          r.department,
-          r.check_in,
-          r.check_out,
-          r.hours_worked,
-          r.overtime_hours || '0',
-          r.status === 'present' ? 'Présent' : r.status === 'late' ? 'Retard' : 'Absent'
-        ])
-      ]
-    } else if (reportType === 'weekly') {
-      ws_data = [
-        ['Rapport Hebdomadaire - Semaine du ' + selectedWeek],
-        [],
-        ['Matricule', 'Nom', 'Jours Présents', 'Total Heures', 'Heures Sup.'],
-        ...reportData.map(r => [
-          r.matricule,
-          r.employee_name,
-          r.days_present,
-          r.total_hours.toFixed(2),
-          r.total_overtime.toFixed(2)
-        ])
-      ]
-    } else {
-      ws_data = [
-        ['Rapport Mensuel - ' + selectedMonth],
-        [],
-        ['Matricule', 'Nom', 'Département', 'J. Ouvrables', 'J. Travaillés', 'Présent', 'Retards', 'Absences', 'Total Heures', 'Heures Sup.', 'Taux %'],
-        ...reportData.map(r => [
-          r.matricule,
-          r.employee_name,
-          r.department,
-          r.working_days,
-          r.days_worked,
-          r.days_present,
-          r.days_late + (r.late_minutes > 0 ? ` (${Math.floor(r.late_minutes / 60)}h${r.late_minutes % 60}min)` : ''),
-          r.days_absent,
-          r.total_hours.toFixed(2),
-          r.total_overtime.toFixed(2),
-          r.attendance_rate + '%'
-        ])
-      ]
-    }
-
-    const wb = XLSX.utils.book_new()
-    const ws = XLSX.utils.aoa_to_sheet(ws_data)
-    
-    // Largeur des colonnes
-    ws['!cols'] = [
-      { wch: 12 },
-      { wch: 25 },
-      { wch: 15 },
-      { wch: 12 },
-      { wch: 12 },
-      { wch: 10 },
-      { wch: 12 },
-      { wch: 10 },
-      { wch: 12 },
-      { wch: 12 },
-      { wch: 10 }
+  const exportToCSV = () => {
+    const headers = [
+      'Nom',
+      'Département',
+      'Arrivée Matin',
+      'Sortie Pause',
+      'Retour Après-midi',
+      'Sortie Soir',
+      'Heures',
+      'H. Sup.',
+      'Statut'
     ]
 
-    XLSX.utils.book_append_sheet(wb, ws, 'Rapport')
-    XLSX.writeFile(wb, `Rapport_${reportType}_${new Date().toISOString().split('T')[0]}.xlsx`)
+    const rows = attendanceData.map(record => [
+      `${record.employees?.first_name || ''} ${record.employees?.last_name || ''}`.trim(),
+      record.employees?.department || '-',
+      record.check_in_morning || '-',
+      record.check_out_morning || '-',
+      record.check_in_afternoon || '-',
+      record.check_out_afternoon || '-',
+      record.hours_worked ? `${record.hours_worked}h` : '0h',
+      record.overtime_hours ? `${record.overtime_hours}h` : '0h',
+      record.status === 'present' ? 'À l\'heure' : record.status === 'late' ? 'Retard' : 'Absent'
+    ])
+
+    const csv = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `rapport_pointage_${selectedDate}.csv`
+    link.click()
   }
 
-  const copyToClipboard = () => {
-    let text = ''
-
-    if (reportType === 'daily') {
-      text = 'Matricule\tNom\tDépartement\tArrivée\tDépart\tHeures\tHeures Sup.\tStatut\n'
-      reportData.forEach(r => {
-        text += `${r.matricule}\t${r.employee_name}\t${r.department}\t${r.check_in}\t${r.check_out}\t${r.hours_worked}\t${r.overtime_hours || '0'}\t${r.status === 'present' ? 'Présent' : r.status === 'late' ? 'Retard' : 'Absent'}\n`
-      })
-    } else if (reportType === 'weekly') {
-      text = 'Matricule\tNom\tJours Présents\tTotal Heures\tHeures Sup.\n'
-      reportData.forEach(r => {
-        text += `${r.matricule}\t${r.employee_name}\t${r.days_present}\t${r.total_hours.toFixed(2)}\t${r.total_overtime.toFixed(2)}\n`
-      })
-    } else {
-      text = 'Matricule\tNom\tDépartement\tJ. Ouvrables\tJ. Travaillés\tPrésent\tRetards\tAbsences\tTotal Heures\tHeures Sup.\tTaux %\n'
-      reportData.forEach(r => {
-        text += `${r.matricule}\t${r.employee_name}\t${r.department}\t${r.working_days}\t${r.days_worked}\t${r.days_present}\t${r.days_late}\t${r.days_absent}\t${r.total_hours.toFixed(2)}\t${r.total_overtime.toFixed(2)}\t${r.attendance_rate}%\n`
-      })
+  const getStatusBadge = (status) => {
+    const badges = {
+      present: { text: 'À l\'heure', color: 'bg-green-100 text-green-800' },
+      late: { text: 'Retard', color: 'bg-orange-100 text-orange-800' },
+      absent: { text: 'Absent', color: 'bg-red-100 text-red-800' }
     }
+    return badges[status] || badges.absent
+  }
 
-    navigator.clipboard.writeText(text)
-    alert('✅ Données copiées ! Vous pouvez maintenant les coller dans Excel (Ctrl+V)')
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+      </div>
+    )
   }
 
   return (
-    <div className="space-y-6 pb-20">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Rapports de présence</h1>
-        <p className="mt-2 text-sm text-gray-700">
-          Générez et exportez des rapports détaillés
-        </p>
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Rapports de Pointage</h1>
+          <p className="mt-2 text-sm text-gray-700">
+            Suivi des présences et heures travaillées
+            <span className="ml-2 inline-flex items-center">
+              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse mr-1"></span>
+              <span className="text-xs text-green-600">Temps réel</span>
+            </span>
+          </p>
+        </div>
+        <button
+          onClick={exportToCSV}
+          disabled={attendanceData.length === 0}
+          className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <Download className="w-5 h-5" />
+          Exporter CSV
+        </button>
       </div>
 
-      {/* Sélecteur de type */}
+      {/* Filtres */}
       <div className="bg-white rounded-xl shadow-lg p-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <button
-        onClick={() => setReportType('weekly')}
-        className={`p-4 rounded-lg border-2 transition ${
-          reportType === 'weekly'
-            ? 'border-indigo-600 bg-indigo-50 text-indigo-900'
-            : 'border-gray-200 hover:border-indigo-300'
-        }`}
-      >
-        <Calendar className="w-6 h-6 mx-auto mb-2" />
-        <h3 className="font-semibold">Rapport Hebdomadaire</h3>
-        <p className="text-xs mt-1 text-gray-600">7 derniers jours</p>
-      </button>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              <Calendar className="inline w-4 h-4 mr-1" />
+              Date
+            </label>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
 
-      <button
-        onClick={() => setReportType('monthly')}
-        className={`p-4 rounded-lg border-2 transition ${
-          reportType === 'monthly'
-            ? 'border-indigo-600 bg-indigo-50 text-indigo-900'
-            : 'border-gray-200 hover:border-indigo-300'
-        }`}
-      >
-        <Calendar className="w-6 h-6 mx-auto mb-2" />
-        <h3 className="font-semibold">Rapport Mensuel</h3>
-        <p className="text-xs mt-1 text-gray-600">Statistiques du mois</p>
-      </button>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              <Filter className="inline w-4 h-4 mr-1" />
+              Département
+            </label>
+            <select
+              value={filterDepartment}
+              onChange={(e) => setFilterDepartment(e.target.value)}
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="all">Tous les départements</option>
+              {departments.map(dept => (
+                <option key={dept} value={dept}>{dept}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Tableau */}
+      <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Nom
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Département
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Arrivée Matin
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Sortie Pause
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Retour PM
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Sortie Soir
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Heures
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  H. Sup.
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Statut
+                </th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {attendanceData.length === 0 ? (
+                <tr>
+                  <td colSpan="9" className="px-6 py-8 text-center text-gray-500">
+                    <Clock className="mx-auto h-12 w-12 text-gray-400 mb-2" />
+                    <p className="font-semibold">Aucun pointage pour cette date</p>
+                    <p className="text-sm mt-2">Date: {selectedDate}</p>
+                    <button
+                      onClick={() => setSelectedDate(getLocalDate())}
+                      className="mt-3 text-indigo-600 hover:text-indigo-700 text-sm font-medium"
+                    >
+                      Retour à aujourd'hui
+                    </button>
+                  </td>
+                </tr>
+              ) : (
+                attendanceData.map((record) => {
+                  const badge = getStatusBadge(record.status)
+                  return (
+                    <tr key={record.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {record.employees?.first_name} {record.employees?.last_name}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {record.employees?.department || '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">
+                        {record.check_in_morning ? (
+                          <span className="text-green-600 font-semibold">
+                            ↓ {record.check_in_morning.substring(0, 5)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">
+                        {record.check_out_morning ? (
+                          <span className="text-gray-600">
+                            ↑ {record.check_out_morning.substring(0, 5)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">
+                        {record.check_in_afternoon ? (
+                          <span className="text-blue-600 font-semibold">
+                            ↓ {record.check_in_afternoon.substring(0, 5)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">
+                        {record.check_out_afternoon ? (
+                          <span className="text-gray-600">
+                            ↑ {record.check_out_afternoon.substring(0, 5)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
+                        {record.hours_worked ? `${record.hours_worked}h` : '0h'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-orange-600">
+                        {record.overtime_hours && parseFloat(record.overtime_hours) > 0
+                          ? `${record.overtime_hours}h`
+                          : '0h'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${badge.color}`}>
+                          {badge.text}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Stats en bas */}
+        {attendanceData.length > 0 && (
+          <div className="bg-gray-50 px-6 py-4 border-t border-gray-200">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <span className="text-gray-600">Total employés:</span>
+                <span className="ml-2 font-semibold text-gray-900">{attendanceData.length}</span>
+              </div>
+              <div>
+                <span className="text-gray-600">À l'heure:</span>
+                <span className="ml-2 font-semibold text-green-600">
+                  {attendanceData.filter(r => r.status === 'present').length}
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-600">En retard:</span>
+                <span className="ml-2 font-semibold text-orange-600">
+                  {attendanceData.filter(r => r.status === 'late').length}
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-600">Total heures sup:</span>
+                <span className="ml-2 font-semibold text-orange-600">
+                  {attendanceData
+                    .reduce((sum, r) => sum + (parseFloat(r.overtime_hours) || 0), 0)
+                    .toFixed(2)}h
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
-
-    {/* Sélecteur de date */}
-    <div className="flex flex-col sm:flex-row gap-4">
-      {reportType === 'daily' && (
-        <div className="flex-1">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Date</label>
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-          />
-        </div>
-      )}
-
-      {reportType === 'weekly' && (
-        <div className="flex-1">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Semaine</label>
-          <input
-            type="week"
-            value={selectedWeek}
-            onChange={(e) => setSelectedWeek(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-          />
-        </div>
-      )}
-
-      {reportType === 'monthly' && (
-        <div className="flex-1">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Mois</label>
-          <input
-            type="month"
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(e.target.value)}
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-          />
-        </div>
-      )}
-
-      <div className="flex gap-2 items-end">
-        <button
-          onClick={exportToExcel}
-          disabled={reportData.length === 0}
-          className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          <FileSpreadsheet className="w-4 h-4" />
-          Excel
-        </button>
-        <button
-          onClick={copyToClipboard}
-          disabled={reportData.length === 0}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          <Copy className="w-4 h-4" />
-          Copier
-        </button>
-      </div>
-    </div>
-  </div>
-
-  {/* Tableau */}
-  <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-    {loading ? (
-      <div className="flex justify-center py-12">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
-      </div>
-    ) : reportData.length === 0 ? (
-      <div className="text-center py-12">
-        <p className="text-gray-500">Aucune donnée pour cette période</p>
-      </div>
-    ) : (
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead className="bg-gray-50">
-            <tr>
-              {reportType === 'daily' && (
-                <>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Matricule</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nom</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Département</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Arrivée</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Départ</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Heures</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">H. Sup.</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Statut</th>
-                </>
-              )}
-              {reportType === 'weekly' && (
-                <>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Matricule</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nom</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Jours Présents</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total Heures</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Heures Sup.</th>
-                </>
-              )}
-              {reportType === 'monthly' && (
-                <>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Matricule</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nom</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Département</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">J. Ouvrables</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">J. Travaillés</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Présent</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Retards</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Absences</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total H</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">H. Sup.</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Taux %</th>
-                </>
-              )}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {reportType === 'daily' && reportData.map((r, i) => (
-              <tr key={i} className="hover:bg-gray-50">
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-mono">{r.matricule}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{r.employee_name}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">{r.department}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">{r.check_in}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">{r.check_out}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold">{r.hours_worked}h</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-orange-600">{r.overtime_hours || '0'}h</td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <span className={`px-2 py-1 text-xs rounded-full font-medium ${
-                    r.status === 'present' ? 'bg-green-100 text-green-800' :
-                    r.status === 'late' ? 'bg-orange-100 text-orange-800' :
-                    'bg-red-100 text-red-800'
-                  }`}>
-                    {r.status === 'present' ? 'Présent' : r.status === 'late' ? 'Retard' : 'Absent'}
-                  </span>
-                </td>
-              </tr>
-            ))}
-            {reportType === 'weekly' && reportData.map((r, i) => (
-              <tr key={i} className="hover:bg-gray-50">
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-mono">{r.matricule}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{r.employee_name}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-center">{r.days_present}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold">{r.total_hours.toFixed(2)}h</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-orange-600">{r.total_overtime.toFixed(2)}h</td>
-              </tr>
-            ))}
-            {reportType === 'monthly' && reportData.map((r, i) => (
-              <tr key={i} className="hover:bg-gray-50">
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-mono">{r.matricule}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{r.employee_name}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm">{r.department}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-center">{r.working_days}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-center font-semibold">{r.days_worked}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-green-600 text-center">{r.days_present}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-center">
-                  <span className="text-orange-600 font-semibold">{r.days_late}</span>
-                  {r.late_minutes > 0 && (
-                    <span className="text-xs text-gray-500 block">({Math.floor(r.late_minutes / 60)}h{r.late_minutes % 60}min)</span>
-                  )}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-red-600 text-center font-semibold">{r.days_absent}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold">{r.total_hours.toFixed(2)}h</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-orange-600">{r.total_overtime.toFixed(2)}h</td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <span className={`px-2 py-1 text-xs rounded-full font-medium ${
-                    parseFloat(r.attendance_rate) >= 90 ? 'bg-green-100 text-green-800' :
-                    parseFloat(r.attendance_rate) >= 75 ? 'bg-orange-100 text-orange-800' :
-                    'bg-red-100 text-red-800'
-                  }`}>
-                    {r.attendance_rate}%
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    )}
-  </div>
-</div>
-) }
+  )
+}
