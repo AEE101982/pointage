@@ -1,34 +1,99 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
-import Login from "./pages/Login"
-import Dashboard from "./pages/Dashboard"
-import Employees from "./pages/Employees"
-import Scan from "./pages/Scan"
-import Reports from "./pages/Reports"
-import MonthlyReports from "./pages/MonthlyReports"  // ✅ AJOUTÉ
-import Users from "./pages/Users"
-import Settings from "./pages/Settings"
-import ProtectedRoute from "./components/auth/ProtectedRoute"
-import Layout from "./components/layout/Layout"
+import { useState, useEffect } from 'react'
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { supabase } from './services/supabase'
+import Login from './pages/Login'
+import Layout from './components/layout/Layout'
+import Dashboard from './pages/Dashboard'
+import Employees from './pages/Employees'
+import Scanner from './pages/Scanner'
+import Reports from './pages/Reports'
+import MonthlyReports from './pages/MonthlyReports'
+import SalaryAdvances from './pages/SalaryAdvances'
+import Users from './pages/Users'
+import Settings from './pages/Settings'
 
-export default function App() {
+function App() {
+  const [user, setUser] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    // Vérifier la session au chargement
+    checkSession()
+  }, [])
+
+  const checkSession = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      
+      if (session?.user) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', session.user.id)
+          .single()
+        
+        if (userData) {
+          setUser(userData)
+        }
+      }
+    } catch (error) {
+      console.error('Erreur checkSession:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // IMPORTANT : Fonction handleLogin correctement définie
+  const handleLogin = (userData) => {
+    console.log('handleLogin appelé avec:', userData)
+    setUser(userData)
+  }
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut()
+      setUser(null)
+    } catch (error) {
+      console.error('Erreur logout:', error)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-red-800 to-red-900 flex items-center justify-center">
+        <div className="text-white text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mx-auto mb-4"></div>
+          <p className="text-xl">Chargement...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <Login onLogin={handleLogin} />
+  }
+
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route element={<ProtectedRoute />}>
-          <Route element={<Layout />}>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/scan" element={<Scan />} />
-            <Route path="/employees" element={<Employees />} />
-            <Route path="/reports" element={<Reports />} />
-            <Route path="/monthly-reports" element={<MonthlyReports />} />  {/* ✅ AJOUTÉ */}
-            <Route path="/users" element={<Users />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Route>
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <Router>
+      <Layout user={user} onLogout={handleLogout}>
+        <Routes>
+          <Route path="/" element={<Dashboard user={user} />} />
+          <Route path="/employees" element={<Employees />} />
+          <Route path="/scanner" element={<Scanner user={user} />} />
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/monthly-reports" element={<MonthlyReports />} />
+          <Route path="/salary-advances" element={<SalaryAdvances user={user} />} />
+          {user.role === 'admin' && (
+            <>
+              <Route path="/users" element={<Users />} />
+              <Route path="/settings" element={<Settings />} />
+            </>
+          )}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Layout>
+    </Router>
   )
 }
+
+export default App
