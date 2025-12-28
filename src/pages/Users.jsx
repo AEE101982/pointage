@@ -19,6 +19,27 @@ export default function Users() {
   useEffect(() => {
     loadCurrentUser()
     loadUsers()
+
+    // ✅ SYNCHRONISATION TEMPS RÉEL
+    const channel = supabase
+      .channel('users-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'users'
+        },
+        (payload) => {
+          console.log('🔄 Changement utilisateurs:', payload)
+          loadUsers()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
   }, [])
 
   const loadCurrentUser = async () => {
@@ -35,6 +56,8 @@ export default function Users() {
         .order('created_at', { ascending: false })
 
       if (error) throw error
+      
+      console.log('👥 Utilisateurs chargés:', data?.length || 0)
       setUsers(data || [])
     } catch (error) {
       console.error('Erreur chargement utilisateurs:', error)
@@ -62,36 +85,61 @@ export default function Users() {
     try {
       console.log('📧 Création utilisateur:', newUser.email)
 
-      // Utiliser signUp classique
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: newUser.email,
-        password: newUser.password,
-        options: {
-          data: {
-            full_name: newUser.full_name
+      // Vérifier si l'utilisateur existe déjà dans la table users
+      const { data: existingUser } = await supabase
+        .from('users')
+        .select('email')
+        .eq('email', newUser.email)
+        .single()
+
+      if (existingUser) {
+        throw new Error('Cet utilisateur existe déjà dans la base de données')
+      }
+
+      // ✅ IMPORTANT : Créer l'utilisateur via Admin API (pas signUp)
+      // signUp déconnecte l'admin, on utilise donc l'API admin
+
+      const { data: { session } } = await supabase.auth.getSession()
+      const adminToken = session?.access_token
+
+      if (!adminToken) {
+        throw new Error('Session admin expirée')
+      }
+
+      // Créer via Admin API sans déconnecter l'admin
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/auth/v1/admin/users`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${adminToken}`
           },
-          emailRedirectTo: undefined
+          body: JSON.stringify({
+            email: newUser.email,
+            password: newUser.password,
+            email_confirm: true,
+            user_metadata: {
+              full_name: newUser.full_name
+            }
+          })
         }
-      })
+      )
 
-      console.log('🔐 Réponse Auth:', authData, authError)
-
-      if (authError) {
-        console.error('❌ Erreur Auth:', authError)
-        throw authError
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.message || 'Erreur création utilisateur')
       }
 
-      if (!authData?.user) {
-        throw new Error('Utilisateur non créé.\n\nVérifiez que la confirmation email est désactivée:\nSupabase > Authentication > Providers > Email > Désactivez "Enable email confirmations"')
-      }
-
-      console.log('✅ Utilisateur Auth créé:', authData.user.id)
+      const authData = await response.json()
+      console.log('✅ Utilisateur Auth créé via Admin API:', authData.id)
 
       // Créer dans la table users
       const { error: dbError } = await supabase
         .from('users')
         .insert([{
-          id: authData.user.id,
+          id: authData.id,
           email: newUser.email,
           full_name: newUser.full_name,
           role: newUser.role
@@ -104,10 +152,11 @@ export default function Users() {
 
       console.log('✅ Utilisateur DB créé')
 
-      // Succès
+      // Succès - Rafraîchir immédiatement
+      await loadUsers()
+      
       setShowModal(false)
       setNewUser({ email: '', password: '', full_name: '', role: 'user' })
-      loadUsers()
       alert('✅ Utilisateur créé avec succès!')
 
     } catch (error) {
@@ -118,7 +167,7 @@ export default function Users() {
       if (errorMsg.includes('JSON') || errorMsg.includes('Unexpected end')) {
         errorMsg = '⚠️ ERREUR DE CONFIGURATION\n\nLa confirmation email est activée.\n\nSOLUTION:\n1. Allez sur Supabase Dashboard\n2. Authentication > Providers > Email\n3. Désactivez "Enable email confirmations"\n4. Sauvegardez et réessayez'
       } else if (errorMsg.includes('already registered') || errorMsg.includes('already been registered')) {
-        errorMsg = '⚠️ Cet email est déjà utilisé'
+        errorMsg = '⚠️ Cet email est déjà utilisé dans Authentication.\n\nVérifiez dans Supabase > Authentication > Users'
       } else if (errorMsg.includes('Invalid email')) {
         errorMsg = '⚠️ Format d\'email invalide'
       } else if (errorMsg.includes('Password')) {
@@ -147,7 +196,8 @@ export default function Users() {
 
       if (dbError) throw dbError
 
-      loadUsers()
+      // Rafraîchir immédiatement
+      await loadUsers()
       alert('✅ Utilisateur supprimé')
       
     } catch (error) {
@@ -170,7 +220,7 @@ export default function Users() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Gestion des Utilisateurs</h1>
           <p className="mt-2 text-sm text-gray-700">
-            Gérer les accès à l'application
+            Gérer les accès à l'application ({users.length} utilisateur{users.length > 1 ? 's' : ''})
           </p>
         </div>
         <button
