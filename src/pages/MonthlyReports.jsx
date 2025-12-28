@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
-import { Calendar, Download, FileSpreadsheet, Clock, TrendingUp } from 'lucide-react'
+import { Calendar, Download, FileSpreadsheet, Clock, TrendingUp, DollarSign } from 'lucide-react'
 
 export default function MonthlyReports() {
   const [attendanceData, setAttendanceData] = useState([])
   const [loading, setLoading] = useState(true)
   
-  // Date du mois sélectionné
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -20,15 +19,12 @@ export default function MonthlyReports() {
     try {
       setLoading(true)
       
-      // Calculer le premier et dernier jour du mois
       const [year, month] = selectedMonth.split('-')
       const firstDay = `${year}-${month}-01`
       const lastDay = new Date(year, month, 0).getDate()
       const lastDayFormatted = `${year}-${month}-${String(lastDay).padStart(2, '0')}`
 
-      console.log('📅 Période:', firstDay, 'à', lastDayFormatted)
-
-      // Récupérer tous les pointages du mois
+      // Récupérer tous les pointages du mois avec infos employé
       const { data: attendanceRecords, error } = await supabase
         .from('attendance')
         .select(`
@@ -37,7 +33,13 @@ export default function MonthlyReports() {
             id,
             first_name,
             last_name,
-            department
+            department,
+            employee_id,
+            monthly_salary,
+            hourly_rate,
+            overtime_rate,
+            contract_type,
+            hire_date
           )
         `)
         .gte('date', firstDay)
@@ -46,7 +48,7 @@ export default function MonthlyReports() {
 
       if (error) throw error
 
-      // Grouper par employé
+      // Grouper par employé et calculer la paie
       const employeeStats = {}
 
       attendanceRecords?.forEach(record => {
@@ -87,15 +89,28 @@ export default function MonthlyReports() {
         })
       })
 
-      // Convertir en tableau
-      const statsArray = Object.values(employeeStats).map(stat => ({
-        ...stat,
-        totalHours: stat.totalHours.toFixed(2),
-        totalOvertime: stat.totalOvertime.toFixed(2)
-      }))
+      // Convertir en tableau et calculer la paie
+      const statsArray = Object.values(employeeStats).map(stat => {
+        const monthlySalary = parseFloat(stat.employee?.monthly_salary || 0)
+        const overtimeRate = parseFloat(stat.employee?.overtime_rate || 0)
+        const totalOvertimeHours = stat.totalOvertime
+        
+        // Calcul de la paie totale
+        const overtimePay = totalOvertimeHours * overtimeRate
+        const totalSalary = monthlySalary + overtimePay
+
+        return {
+          ...stat,
+          totalHours: stat.totalHours.toFixed(2),
+          totalOvertime: stat.totalOvertime.toFixed(2),
+          monthlySalary: monthlySalary.toFixed(2),
+          overtimeRate: overtimeRate.toFixed(2),
+          overtimePay: overtimePay.toFixed(2),
+          totalSalary: totalSalary.toFixed(2)
+        }
+      })
 
       setAttendanceData(statsArray)
-      console.log('✅ Stats mensuelles:', statsArray)
       
     } catch (error) {
       console.error('Erreur chargement rapport mensuel:', error)
@@ -105,46 +120,75 @@ export default function MonthlyReports() {
   }
 
   const exportToExcel = () => {
-    // En-têtes du fichier Excel
     const headers = [
+      'Matricule',
       'Nom',
       'Prénom',
       'Département',
+      'Type Contrat',
       'Jours travaillés',
       'Jours à l\'heure',
       'Jours en retard',
       'Total heures',
-      'Heures supplémentaires'
+      'Heures supplémentaires',
+      'Salaire mensuel (MAD)',
+      'Taux HS (MAD/h)',
+      'Prime HS (MAD)',
+      'TOTAL À PAYER (MAD)'
     ]
 
     const rows = attendanceData.map(stat => [
+      stat.employee?.employee_id || '',
       stat.employee?.last_name || '',
       stat.employee?.first_name || '',
       stat.employee?.department || '',
+      stat.employee?.contract_type || '',
       stat.totalDays,
       stat.presentDays,
       stat.lateDays,
       stat.totalHours,
-      stat.totalOvertime
+      stat.totalOvertime,
+      stat.monthlySalary,
+      stat.overtimeRate,
+      stat.overtimePay,
+      stat.totalSalary
     ])
 
-    // Créer le CSV
+    // Total général
+    const totalRow = [
+      '',
+      '',
+      'TOTAL GÉNÉRAL',
+      '',
+      '',
+      attendanceData.reduce((sum, s) => sum + s.totalDays, 0),
+      attendanceData.reduce((sum, s) => sum + s.presentDays, 0),
+      attendanceData.reduce((sum, s) => sum + s.lateDays, 0),
+      attendanceData.reduce((sum, s) => sum + parseFloat(s.totalHours), 0).toFixed(2),
+      attendanceData.reduce((sum, s) => sum + parseFloat(s.totalOvertime), 0).toFixed(2),
+      attendanceData.reduce((sum, s) => sum + parseFloat(s.monthlySalary), 0).toFixed(2),
+      '',
+      attendanceData.reduce((sum, s) => sum + parseFloat(s.overtimePay), 0).toFixed(2),
+      attendanceData.reduce((sum, s) => sum + parseFloat(s.totalSalary), 0).toFixed(2)
+    ]
+
     const csv = [
       headers.join(','),
-      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(',')),
+      '',
+      totalRow.map(cell => `"${cell}"`).join(',')
     ].join('\n')
 
-    // Télécharger
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
-    link.download = `rapport_mensuel_${selectedMonth}.csv`
+    link.download = `paie_${selectedMonth}.csv`
     link.click()
   }
 
   const exportDetailedExcel = () => {
-    // Export détaillé avec toutes les dates
     const headers = [
+      'Matricule',
       'Nom',
       'Prénom',
       'Département',
@@ -163,6 +207,7 @@ export default function MonthlyReports() {
     attendanceData.forEach(stat => {
       stat.details.forEach(detail => {
         rows.push([
+          stat.employee?.employee_id || '',
           stat.employee?.last_name || '',
           stat.employee?.first_name || '',
           stat.employee?.department || '',
@@ -186,7 +231,7 @@ export default function MonthlyReports() {
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
-    link.download = `rapport_detaille_${selectedMonth}.csv`
+    link.download = `details_${selectedMonth}.csv`
     link.click()
   }
 
@@ -204,13 +249,17 @@ export default function MonthlyReports() {
     )
   }
 
+  const totalPayroll = attendanceData.reduce((sum, s) => sum + parseFloat(s.totalSalary), 0)
+  const totalOvertimePay = attendanceData.reduce((sum, s) => sum + parseFloat(s.overtimePay), 0)
+  const totalBaseSalary = attendanceData.reduce((sum, s) => sum + parseFloat(s.monthlySalary), 0)
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Rapports Mensuels</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Rapports de Paie Mensuelle</h1>
           <p className="mt-2 text-sm text-gray-700">
-            Récapitulatif mensuel pour la paie
+            Calcul automatique des salaires avec heures supplémentaires
           </p>
         </div>
         <div className="flex gap-3">
@@ -220,7 +269,7 @@ export default function MonthlyReports() {
             className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition disabled:opacity-50"
           >
             <Download className="w-5 h-5" />
-            Export Résumé
+            Export Paie
           </button>
           <button
             onClick={exportDetailedExcel}
@@ -258,25 +307,13 @@ export default function MonthlyReports() {
           <div className="bg-white rounded-xl shadow-lg p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Total Employés</p>
-                <p className="text-3xl font-bold text-gray-900 mt-2">{attendanceData.length}</p>
-              </div>
-              <div className="bg-indigo-100 p-3 rounded-full">
-                <Clock className="w-8 h-8 text-indigo-600" />
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-600">Total Heures</p>
+                <p className="text-sm text-gray-600">Salaires de base</p>
                 <p className="text-3xl font-bold text-blue-600 mt-2">
-                  {attendanceData.reduce((sum, s) => sum + parseFloat(s.totalHours), 0).toFixed(0)}h
+                  {totalBaseSalary.toLocaleString()} MAD
                 </p>
               </div>
               <div className="bg-blue-100 p-3 rounded-full">
-                <Clock className="w-8 h-8 text-blue-600" />
+                <DollarSign className="w-8 h-8 text-blue-600" />
               </div>
             </div>
           </div>
@@ -284,9 +321,9 @@ export default function MonthlyReports() {
           <div className="bg-white rounded-xl shadow-lg p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Heures Sup. Total</p>
+                <p className="text-sm text-gray-600">Primes HS</p>
                 <p className="text-3xl font-bold text-orange-600 mt-2">
-                  {attendanceData.reduce((sum, s) => sum + parseFloat(s.totalOvertime), 0).toFixed(0)}h
+                  {totalOvertimePay.toLocaleString()} MAD
                 </p>
               </div>
               <div className="bg-orange-100 p-3 rounded-full">
@@ -298,52 +335,53 @@ export default function MonthlyReports() {
           <div className="bg-white rounded-xl shadow-lg p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600">Jours Travaillés</p>
+                <p className="text-sm text-gray-600">TOTAL PAIE</p>
                 <p className="text-3xl font-bold text-green-600 mt-2">
-                  {attendanceData.reduce((sum, s) => sum + s.totalDays, 0)}
+                  {totalPayroll.toLocaleString()} MAD
                 </p>
               </div>
               <div className="bg-green-100 p-3 rounded-full">
-                <Calendar className="w-8 h-8 text-green-600" />
+                <DollarSign className="w-8 h-8 text-green-600" />
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-lg p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Heures Sup. Total</p>
+                <p className="text-3xl font-bold text-purple-600 mt-2">
+                  {attendanceData.reduce((sum, s) => sum + parseFloat(s.totalOvertime), 0).toFixed(0)}h
+                </p>
+              </div>
+              <div className="bg-purple-100 p-3 rounded-full">
+                <Clock className="w-8 h-8 text-purple-600" />
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Tableau récapitulatif */}
+      {/* Tableau de paie */}
       <div className="bg-white rounded-xl shadow-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Employé
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Département
-                </th>
-                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Jours
-                </th>
-                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  À l'heure
-                </th>
-                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Retards
-                </th>
-                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Total Heures
-                </th>
-                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  H. Sup.
-                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Matricule</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Employé</th>
+                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Jours</th>
+                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">H. Normales</th>
+                <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">H. Sup.</th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Salaire base</th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Prime HS</th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase bg-green-50">TOTAL</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {attendanceData.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="px-6 py-8 text-center text-gray-500">
+                  <td colSpan="8" className="px-6 py-8 text-center text-gray-500">
                     <FileSpreadsheet className="mx-auto h-12 w-12 text-gray-400 mb-2" />
                     Aucune donnée pour ce mois
                   </td>
@@ -351,41 +389,61 @@ export default function MonthlyReports() {
               ) : (
                 attendanceData.map((stat, index) => (
                   <tr key={index} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                      {stat.employee?.employee_id}
+                    </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-gray-900">
                         {stat.employee?.first_name} {stat.employee?.last_name}
                       </div>
+                      <div className="text-xs text-gray-500">{stat.employee?.department}</div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {stat.employee?.department || '-'}
+                    <td className="px-6 py-4 whitespace-nowrap text-center text-sm font-semibold text-gray-900">
+                      {stat.totalDays}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <span className="text-sm font-semibold text-gray-900">
-                        {stat.totalDays}
-                      </span>
+                    <td className="px-6 py-4 whitespace-nowrap text-center text-sm text-gray-900">
+                      {stat.totalHours}h
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <span className="text-sm font-semibold text-green-600">
-                        {stat.presentDays}
-                      </span>
+                    <td className="px-6 py-4 whitespace-nowrap text-center text-sm font-semibold text-orange-600">
+                      {stat.totalOvertime}h
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <span className="text-sm font-semibold text-orange-600">
-                        {stat.lateDays}
-                      </span>
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm text-gray-900">
+                      {parseFloat(stat.monthlySalary).toLocaleString()} MAD
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <span className="text-sm font-bold text-blue-600">
-                        {stat.totalHours}h
-                      </span>
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-semibold text-orange-600">
+                      {parseFloat(stat.overtimePay).toLocaleString()} MAD
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <span className="text-sm font-bold text-orange-600">
-                        {stat.totalOvertime}h
-                      </span>
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-bold text-green-600 bg-green-50">
+                      {parseFloat(stat.totalSalary).toLocaleString()} MAD
                     </td>
                   </tr>
                 ))
+              )}
+              
+              {/* Ligne de total */}
+              {attendanceData.length > 0 && (
+                <tr className="bg-gray-100 font-bold">
+                  <td className="px-6 py-4 text-sm"></td>
+                  <td className="px-6 py-4 text-sm">TOTAL GÉNÉRAL</td>
+                  <td className="px-6 py-4 text-center text-sm">
+                    {attendanceData.reduce((sum, s) => sum + s.totalDays, 0)}
+                  </td>
+                  <td className="px-6 py-4 text-center text-sm">
+                    {attendanceData.reduce((sum, s) => sum + parseFloat(s.totalHours), 0).toFixed(0)}h
+                  </td>
+                  <td className="px-6 py-4 text-center text-sm text-orange-600">
+                    {attendanceData.reduce((sum, s) => sum + parseFloat(s.totalOvertime), 0).toFixed(0)}h
+                  </td>
+                  <td className="px-6 py-4 text-right text-sm">
+                    {totalBaseSalary.toLocaleString()} MAD
+                  </td>
+                  <td className="px-6 py-4 text-right text-sm text-orange-600">
+                    {totalOvertimePay.toLocaleString()} MAD
+                  </td>
+                  <td className="px-6 py-4 text-right text-sm text-green-600 bg-green-100">
+                    {totalPayroll.toLocaleString()} MAD
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
