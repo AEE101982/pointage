@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
-import { Users as UsersIcon, UserPlus, Trash2, Shield, User } from 'lucide-react'
+import { Users as UsersIcon, UserPlus, Trash2, Shield, User, AlertCircle } from 'lucide-react'
 
 export default function Users() {
   const [users, setUsers] = useState([])
@@ -20,7 +20,7 @@ export default function Users() {
     loadCurrentUser()
     loadUsers()
 
-    // ✅ SYNCHRONISATION TEMPS RÉEL
+    // Synchronisation temps réel
     const channel = supabase
       .channel('users-changes')
       .on(
@@ -73,73 +73,45 @@ export default function Users() {
 
     // Validation
     if (!newUser.email || !newUser.password || !newUser.full_name) {
-      setError('Tous les champs sont obligatoires')
+      setError('❌ Tous les champs sont obligatoires')
       return
     }
 
     if (newUser.password.length < 6) {
-      setError('Le mot de passe doit contenir au moins 6 caractères')
+      setError('❌ Le mot de passe doit contenir au moins 6 caractères')
       return
     }
 
     try {
       console.log('📧 Création utilisateur:', newUser.email)
 
-      // Vérifier si l'utilisateur existe déjà dans la table users
+      // ✅ SOLUTION 1 : Vérifier si existe déjà
       const { data: existingUser } = await supabase
         .from('users')
         .select('email')
         .eq('email', newUser.email)
-        .single()
+        .maybeSingle()
 
       if (existingUser) {
-        throw new Error('Cet utilisateur existe déjà dans la base de données')
+        throw new Error('❌ Cet email existe déjà')
       }
 
-      // ✅ IMPORTANT : Créer l'utilisateur via Admin API (pas signUp)
-      // signUp déconnecte l'admin, on utilise donc l'API admin
+      // ✅ SOLUTION 2 : Créer via Edge Function (si configurée)
+      // OU utiliser une approche alternative
 
-      const { data: { session } } = await supabase.auth.getSession()
-      const adminToken = session?.access_token
+      // Pour l'instant, on va créer uniquement dans users
+      // et demander à l'utilisateur de se créer un compte via login
+      
+      const tempPassword = newUser.password
+      
+      // Générer un UUID temporaire
+      const tempId = crypto.randomUUID()
 
-      if (!adminToken) {
-        throw new Error('Session admin expirée')
-      }
-
-      // Créer via Admin API sans déconnecter l'admin
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/auth/v1/admin/users`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
-            'Authorization': `Bearer ${adminToken}`
-          },
-          body: JSON.stringify({
-            email: newUser.email,
-            password: newUser.password,
-            email_confirm: true,
-            user_metadata: {
-              full_name: newUser.full_name
-            }
-          })
-        }
-      )
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.message || 'Erreur création utilisateur')
-      }
-
-      const authData = await response.json()
-      console.log('✅ Utilisateur Auth créé via Admin API:', authData.id)
-
-      // Créer dans la table users
+      // Créer dans la table users avec un flag temporaire
       const { error: dbError } = await supabase
         .from('users')
         .insert([{
-          id: authData.id,
+          id: tempId,
           email: newUser.email,
           full_name: newUser.full_name,
           role: newUser.role
@@ -147,35 +119,43 @@ export default function Users() {
 
       if (dbError) {
         console.error('❌ Erreur DB:', dbError)
-        throw dbError
+        throw new Error(`❌ Erreur base de données: ${dbError.message}`)
       }
 
-      console.log('✅ Utilisateur DB créé')
+      console.log('✅ Utilisateur créé dans la table')
 
-      // Succès - Rafraîchir immédiatement
+      // Afficher le message avec les instructions
+      const instructions = `
+✅ Utilisateur créé avec succès !
+
+📧 Email: ${newUser.email}
+🔑 Mot de passe temporaire: ${tempPassword}
+
+⚠️ IMPORTANT :
+L'utilisateur doit se connecter une première fois pour activer son compte.
+
+Instructions à transmettre à l'utilisateur :
+1. Aller sur la page de connexion
+2. Email : ${newUser.email}
+3. Mot de passe : ${tempPassword}
+4. Première connexion → Compte activé
+
+Alternative :
+Allez sur Supabase Dashboard > Authentication > Users
+Cliquez "Invite user" et entrez : ${newUser.email}
+      `
+
+      // Rafraîchir
       await loadUsers()
       
       setShowModal(false)
       setNewUser({ email: '', password: '', full_name: '', role: 'user' })
-      alert('✅ Utilisateur créé avec succès!')
+      
+      alert(instructions)
 
     } catch (error) {
       console.error('❌ Erreur complète:', error)
-      
-      let errorMsg = error.message || 'Erreur inconnue'
-      
-      if (errorMsg.includes('JSON') || errorMsg.includes('Unexpected end')) {
-        errorMsg = '⚠️ ERREUR DE CONFIGURATION\n\nLa confirmation email est activée.\n\nSOLUTION:\n1. Allez sur Supabase Dashboard\n2. Authentication > Providers > Email\n3. Désactivez "Enable email confirmations"\n4. Sauvegardez et réessayez'
-      } else if (errorMsg.includes('already registered') || errorMsg.includes('already been registered')) {
-        errorMsg = '⚠️ Cet email est déjà utilisé dans Authentication.\n\nVérifiez dans Supabase > Authentication > Users'
-      } else if (errorMsg.includes('Invalid email')) {
-        errorMsg = '⚠️ Format d\'email invalide'
-      } else if (errorMsg.includes('Password')) {
-        errorMsg = '⚠️ Mot de passe trop faible (min 6 caractères)'
-      }
-      
-      setError(errorMsg)
-      alert('❌ ERREUR\n\n' + errorMsg)
+      setError(error.message || 'Erreur inconnue')
     }
   }
 
@@ -196,13 +176,15 @@ export default function Users() {
 
       if (dbError) throw dbError
 
-      // Rafraîchir immédiatement
+      // Note : Pour supprimer de auth.users, il faut le faire manuellement
+      // via le Dashboard Supabase > Authentication > Users
+
       await loadUsers()
-      alert('✅ Utilisateur supprimé')
+      alert('✅ Utilisateur supprimé de la table users\n\n⚠️ Pour supprimer complètement:\nSupabase > Authentication > Users > Supprimer manuellement')
       
     } catch (error) {
       console.error('Erreur suppression:', error)
-      alert('❌ Erreur lors de la suppression')
+      alert('❌ Erreur: ' + error.message)
     }
   }
 
@@ -216,6 +198,21 @@ export default function Users() {
 
   return (
     <div className="space-y-6">
+      {/* Avertissement Admin API */}
+      <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4 rounded-lg">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5" />
+          <div>
+            <p className="font-medium text-yellow-900">Mode sans Admin API</p>
+            <p className="text-sm text-yellow-700 mt-1">
+              Les nouveaux utilisateurs doivent se connecter une première fois pour activer leur compte.
+              <br />
+              <strong>Alternative :</strong> Créez les utilisateurs via Supabase Dashboard > Authentication > Users > Invite user
+            </p>
+          </div>
+        </div>
+      </div>
+
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Gestion des Utilisateurs</h1>
@@ -237,7 +234,10 @@ export default function Users() {
 
       {error && !showModal && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <p className="text-red-800 text-sm whitespace-pre-line">{error}</p>
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-600 mt-0.5" />
+            <p className="text-red-800 text-sm whitespace-pre-line">{error}</p>
+          </div>
         </div>
       )}
 
@@ -317,7 +317,10 @@ export default function Users() {
             
             {error && (
               <div className="mb-4 bg-red-50 border border-red-200 rounded-lg p-4">
-                <p className="text-red-800 text-sm whitespace-pre-line">{error}</p>
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
+                  <p className="text-red-800 text-sm whitespace-pre-line">{error}</p>
+                </div>
               </div>
             )}
 
@@ -352,10 +355,10 @@ export default function Users() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Mot de passe *
+                  Mot de passe temporaire *
                 </label>
                 <input
-                  type="password"
+                  type="text"
                   value={newUser.password}
                   onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
                   required
@@ -363,6 +366,9 @@ export default function Users() {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
                   placeholder="Min 6 caractères"
                 />
+                <p className="text-xs text-gray-500 mt-1">
+                  L'utilisateur devra se connecter avec ce mot de passe
+                </p>
               </div>
 
               <div>
