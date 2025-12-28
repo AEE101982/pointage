@@ -1,27 +1,26 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../services/supabase'
-import { UserPlus, Edit, Trash2, QrCode, Download, Search, Upload, X, User } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
+import { Users as UsersIcon, UserPlus, Edit, Trash2, QrCode as QrCodeIcon, Download, DollarSign } from 'lucide-react'
 
 export default function Employees() {
   const [employees, setEmployees] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
-  const [showQRModal, setShowQRModal] = useState(false)
-  const [selectedEmployee, setSelectedEmployee] = useState(null)
-  const [searchTerm, setSearchTerm] = useState('')
-  const [uploading, setUploading] = useState(false)
-  const [photoPreview, setPhotoPreview] = useState(null)
-  const [photoFile, setPhotoFile] = useState(null)
-  const fileInputRef = useRef(null)
-  
+  const [editingEmployee, setEditingEmployee] = useState(null)
   const [formData, setFormData] = useState({
     first_name: '',
     last_name: '',
-    email: '',
+    employee_id: '',
     department: '',
-    matricule: '',
-    photo_url: ''
+    position: '',
+    phone: '',
+    email: '',
+    photo_url: '',
+    monthly_salary: '',
+    overtime_rate: '',
+    hire_date: '',
+    contract_type: 'CDI',
+    contract_end_date: ''
   })
 
   useEffect(() => {
@@ -30,6 +29,7 @@ export default function Employees() {
 
   const loadEmployees = async () => {
     try {
+      setLoading(true)
       const { data, error } = await supabase
         .from('employees')
         .select('*')
@@ -44,184 +44,87 @@ export default function Employees() {
     }
   }
 
-  const generateMatricule = () => {
-    const count = employees.length + 1
-    return `EMP${String(count).padStart(4, '0')}`
+  const generateQRCode = (employeeId) => {
+    return `EMP${employeeId.toString().padStart(4, '0')}`
   }
 
-  const handleOpenAddModal = () => {
-    setSelectedEmployee(null)
-    setPhotoPreview(null)
-    setPhotoFile(null)
-    setFormData({
-      first_name: '',
-      last_name: '',
-      email: '',
-      department: '',
-      matricule: generateMatricule(),
-      photo_url: ''
-    })
-    setShowModal(true)
-  }
-
-  const handleOpenEditModal = (employee) => {
-    setSelectedEmployee(employee)
-    setPhotoPreview(employee.photo_url)
-    setPhotoFile(null)
-    setFormData({
-      first_name: employee.first_name,
-      last_name: employee.last_name,
-      email: employee.email || '',
-      department: employee.department,
-      matricule: employee.matricule,
-      photo_url: employee.photo_url || ''
-    })
-    setShowModal(true)
-  }
-
-  const handlePhotoChange = (e) => {
-    const file = e.target.files[0]
-    if (file) {
-      // Vérifier la taille (max 5MB)
-      if (file.size > 5 * 1024 * 1024) {
-        alert('La photo ne doit pas dépasser 5MB')
-        return
-      }
-
-      // Vérifier le type
-      if (!file.type.startsWith('image/')) {
-        alert('Veuillez sélectionner une image')
-        return
-      }
-
-      setPhotoFile(file)
-      
-      // Créer un aperçu
-      const reader = new FileReader()
-      reader.onloadend = () => {
-        setPhotoPreview(reader.result)
-      }
-      reader.readAsDataURL(file)
-    }
-  }
-
-  const uploadPhoto = async (matricule) => {
-    if (!photoFile) return formData.photo_url
+  const handleSubmit = async (e) => {
+    e.preventDefault()
 
     try {
-      setUploading(true)
-      
-      // Créer un nom de fichier unique
-      const fileExt = photoFile.name.split('.').pop()
-      const fileName = `${matricule}_${Date.now()}.${fileExt}`
-      const filePath = `${fileName}`
+      // Calculer le taux horaire basé sur 191h/mois (temps de travail légal au Maroc)
+      const monthlySalary = parseFloat(formData.monthly_salary) || 0
+      const hourlyRate = monthlySalary / 191
+      const overtimeRate = parseFloat(formData.overtime_rate) || (hourlyRate * 1.5)
 
-      // Supprimer l'ancienne photo si elle existe
-      if (selectedEmployee?.photo_url) {
-        const oldFileName = selectedEmployee.photo_url.split('/').pop()
-        await supabase.storage
-          .from('employee-photos')
-          .remove([oldFileName])
+      const employeeData = {
+        first_name: formData.first_name,
+        last_name: formData.last_name,
+        employee_id: formData.employee_id,
+        department: formData.department,
+        position: formData.position,
+        phone: formData.phone,
+        email: formData.email,
+        photo_url: formData.photo_url,
+        monthly_salary: monthlySalary,
+        hourly_rate: hourlyRate.toFixed(2),
+        overtime_rate: overtimeRate.toFixed(2),
+        hire_date: formData.hire_date || null,
+        contract_type: formData.contract_type,
+        contract_end_date: formData.contract_type === 'CDD' ? formData.contract_end_date : null
       }
 
-      // Upload la nouvelle photo
-      const { error: uploadError } = await supabase.storage
-        .from('employee-photos')
-        .upload(filePath, photoFile, {
-          cacheControl: '3600',
-          upsert: true
-        })
-
-      if (uploadError) throw uploadError
-
-      // Obtenir l'URL publique
-      const { data } = supabase.storage
-        .from('employee-photos')
-        .getPublicUrl(filePath)
-
-      return data.publicUrl
-    } catch (error) {
-      console.error('Erreur upload photo:', error)
-      alert('Erreur lors de l\'upload de la photo')
-      return formData.photo_url
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  const handleSubmit = async () => {
-    try {
-      setUploading(true)
-
-      // Upload de la photo si nécessaire
-      const photoUrl = await uploadPhoto(formData.matricule)
-
-      if (selectedEmployee) {
-        // Modifier
+      if (editingEmployee) {
         const { error } = await supabase
           .from('employees')
-          .update({
-            first_name: formData.first_name,
-            last_name: formData.last_name,
-            email: formData.email,
-            department: formData.department,
-            matricule: formData.matricule,
-            photo_url: photoUrl,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', selectedEmployee.id)
+          .update(employeeData)
+          .eq('id', editingEmployee.id)
 
         if (error) throw error
-        alert('Employé modifié avec succès !')
       } else {
-        // Ajouter
+        employeeData.qr_code = generateQRCode(Date.now())
+        
         const { error } = await supabase
           .from('employees')
-          .insert([{
-            first_name: formData.first_name,
-            last_name: formData.last_name,
-            email: formData.email,
-            department: formData.department,
-            matricule: formData.matricule,
-            qr_code: formData.matricule,
-            photo_url: photoUrl
-          }])
+          .insert([employeeData])
 
         if (error) throw error
-        alert('Employé ajouté avec succès !')
       }
 
       setShowModal(false)
+      setEditingEmployee(null)
+      setFormData({
+        first_name: '',
+        last_name: '',
+        employee_id: '',
+        department: '',
+        position: '',
+        phone: '',
+        email: '',
+        photo_url: '',
+        monthly_salary: '',
+        overtime_rate: '',
+        hire_date: '',
+        contract_type: 'CDI',
+        contract_end_date: ''
+      })
       loadEmployees()
     } catch (error) {
       console.error('Erreur:', error)
-      alert('Erreur lors de l\'opération: ' + error.message)
-    } finally {
-      setUploading(false)
+      alert('Erreur lors de l\'enregistrement')
     }
   }
 
-  const handleDelete = async (id, name) => {
-    if (!confirm(`Êtes-vous sûr de vouloir supprimer ${name} ?`)) return
+  const handleDelete = async (id) => {
+    if (!confirm('Êtes-vous sûr de vouloir supprimer cet employé ?')) return
 
     try {
-      const employee = employees.find(e => e.id === id)
-      
-      // Supprimer la photo si elle existe
-      if (employee?.photo_url) {
-        const fileName = employee.photo_url.split('/').pop()
-        await supabase.storage
-          .from('employee-photos')
-          .remove([fileName])
-      }
-
       const { error } = await supabase
         .from('employees')
         .delete()
         .eq('id', id)
 
       if (error) throw error
-      alert('Employé supprimé avec succès !')
       loadEmployees()
     } catch (error) {
       console.error('Erreur suppression:', error)
@@ -229,334 +132,373 @@ export default function Employees() {
     }
   }
 
-  const downloadQRCode = (employee) => {
-    const svg = document.getElementById(`qr-${employee.id}`)
-    const svgData = new XMLSerializer().serializeToString(svg)
-    const canvas = document.createElement('canvas')
-    const ctx = canvas.getContext('2d')
-    const img = new Image()
-    
-    img.onload = () => {
-      canvas.width = img.width
-      canvas.height = img.height
-      ctx.drawImage(img, 0, 0)
-      const pngFile = canvas.toDataURL('image/png')
-      
-      const downloadLink = document.createElement('a')
-      downloadLink.download = `QR_${employee.matricule}_${employee.first_name}_${employee.last_name}.png`
-      downloadLink.href = pngFile
-      downloadLink.click()
-    }
-    
-    img.src = 'data:image/svg+xml;base64,' + btoa(svgData)
+  const openEditModal = (employee) => {
+    setEditingEmployee(employee)
+    setFormData({
+      first_name: employee.first_name || '',
+      last_name: employee.last_name || '',
+      employee_id: employee.employee_id || '',
+      department: employee.department || '',
+      position: employee.position || '',
+      phone: employee.phone || '',
+      email: employee.email || '',
+      photo_url: employee.photo_url || '',
+      monthly_salary: employee.monthly_salary || '',
+      overtime_rate: employee.overtime_rate || '',
+      hire_date: employee.hire_date || '',
+      contract_type: employee.contract_type || 'CDI',
+      contract_end_date: employee.contract_end_date || ''
+    })
+    setShowModal(true)
   }
 
-  const filteredEmployees = employees.filter(emp => 
-    emp.first_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    emp.last_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    emp.matricule.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    emp.department.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+  const openCreateModal = () => {
+    setEditingEmployee(null)
+    setFormData({
+      first_name: '',
+      last_name: '',
+      employee_id: '',
+      department: '',
+      position: '',
+      phone: '',
+      email: '',
+      photo_url: '',
+      monthly_salary: '',
+      overtime_rate: '',
+      hire_date: '',
+      contract_type: 'CDI',
+      contract_end_date: ''
+    })
+    setShowModal(true)
+  }
+
+  const downloadQRCode = (employee) => {
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${employee.qr_code}`
+    const link = document.createElement('a')
+    link.href = qrCodeUrl
+    link.download = `qrcode_${employee.first_name}_${employee.last_name}.png`
+    link.click()
+  }
+
+  const getContractStatus = (employee) => {
+    if (employee.contract_type === 'CDI') {
+      return { text: 'CDI', color: 'bg-green-100 text-green-800' }
+    }
+    
+    if (employee.contract_end_date) {
+      const endDate = new Date(employee.contract_end_date)
+      const today = new Date()
+      const daysRemaining = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24))
+      
+      if (daysRemaining < 0) {
+        return { text: 'CDD Expiré', color: 'bg-red-100 text-red-800' }
+      } else if (daysRemaining <= 30) {
+        return { text: `CDD (${daysRemaining}j)`, color: 'bg-orange-100 text-orange-800' }
+      } else {
+        return { text: 'CDD', color: 'bg-blue-100 text-blue-800' }
+      }
+    }
+    
+    return { text: 'CDD', color: 'bg-blue-100 text-blue-800' }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+      </div>
+    )
+  }
 
   return (
-    <div className="space-y-6 pb-20">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Gestion des employés</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Gestion des Employés</h1>
           <p className="mt-2 text-sm text-gray-700">
-            {employees.length} employé{employees.length > 1 ? 's' : ''} au total
+            Gérer les employés et leurs informations de paie
           </p>
         </div>
         <button
-          onClick={handleOpenAddModal}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-md"
+          onClick={openCreateModal}
+          className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
         >
           <UserPlus className="w-5 h-5" />
-          Ajouter un employé
+          Nouvel employé
         </button>
       </div>
 
-      {/* Barre de recherche */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
-        <input
-          type="text"
-          placeholder="Rechercher par nom, matricule ou département..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-        />
+      <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Matricule</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Nom</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Poste</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Contrat</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Salaire</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Taux HS</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date embauche</th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {employees.length === 0 ? (
+                <tr>
+                  <td colSpan="8" className="px-6 py-8 text-center text-gray-500">
+                    <UsersIcon className="mx-auto h-12 w-12 text-gray-400 mb-2" />
+                    Aucun employé
+                  </td>
+                </tr>
+              ) : (
+                employees.map((employee) => {
+                  const contractStatus = getContractStatus(employee)
+                  return (
+                    <tr key={employee.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                        {employee.employee_id}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm font-medium text-gray-900">
+                          {employee.first_name} {employee.last_name}
+                        </div>
+                        <div className="text-sm text-gray-500">{employee.department}</div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {employee.position}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${contractStatus.color}`}>
+                          {contractStatus.text}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
+                        {employee.monthly_salary ? `${parseFloat(employee.monthly_salary).toLocaleString()} MAD` : '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-orange-600 font-semibold">
+                        {employee.overtime_rate ? `${parseFloat(employee.overtime_rate).toFixed(2)} MAD/h` : '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {employee.hire_date ? new Date(employee.hire_date).toLocaleDateString('fr-FR') : '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <button
+                          onClick={() => downloadQRCode(employee)}
+                          className="text-purple-600 hover:text-purple-900 mr-3"
+                          title="Télécharger QR Code"
+                        >
+                          <QrCodeIcon className="w-5 h-5" />
+                        </button>
+                        <button
+                          onClick={() => openEditModal(employee)}
+                          className="text-indigo-600 hover:text-indigo-900 mr-3"
+                        >
+                          <Edit className="w-5 h-5" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(employee.id)}
+                          className="text-red-600 hover:text-red-900"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      {/* Liste des employés */}
-      {loading ? (
-        <div className="flex justify-center py-12">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
-        </div>
-      ) : filteredEmployees.length === 0 ? (
-        <div className="text-center py-12 bg-white rounded-lg shadow">
-          <p className="text-gray-500">
-            {searchTerm ? 'Aucun employé trouvé' : 'Aucun employé enregistré'}
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredEmployees.map((employee) => (
-            <div key={employee.id} className="bg-white rounded-lg shadow-md hover:shadow-lg transition p-6">
-              {/* Photo */}
-              <div className="flex justify-center mb-4">
-                {employee.photo_url ? (
-                  <img 
-                    src={employee.photo_url} 
-                    alt={`${employee.first_name} ${employee.last_name}`}
-                    className="w-24 h-24 rounded-full object-cover border-4 border-indigo-100"
-                  />
-                ) : (
-                  <div className="w-24 h-24 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center border-4 border-indigo-100">
-                    <User className="w-12 h-12 text-white" />
-                  </div>
-                )}
-              </div>
-
-              <div className="text-center mb-4">
-                <h3 className="text-lg font-bold text-gray-900">
-                  {employee.first_name} {employee.last_name}
-                </h3>
-                <p className="text-sm text-gray-600">{employee.department}</p>
-                <p className="text-xs text-gray-500 mt-1 font-mono">{employee.matricule}</p>
-              </div>
-
-              {/* QR Code miniature */}
-              <div className="flex justify-center my-4">
-                <div className="p-2 bg-gray-50 rounded-lg">
-                  <QRCodeSVG
-                    id={`qr-${employee.id}`}
-                    value={employee.qr_code}
-                    size={100}
-                    level="H"
-                    includeMargin={true}
-                  />
-                </div>
-              </div>
-
-              {/* Actions */}
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    setSelectedEmployee(employee)
-                    setShowQRModal(true)
-                  }}
-                  className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition text-sm"
-                >
-                  <QrCode className="w-4 h-4" />
-                  QR
-                </button>
-                <button
-                  onClick={() => handleOpenEditModal(employee)}
-                  className="flex items-center justify-center p-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition"
-                >
-                  <Edit className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={() => handleDelete(employee.id, `${employee.first_name} ${employee.last_name}`)}
-                  className="flex items-center justify-center p-2 bg-red-50 text-red-700 rounded-lg hover:bg-red-100 transition"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Modal Ajouter/Modifier */}
+      {/* Modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md my-8">
-            <div className="p-6 border-b border-gray-200">
-              <h2 className="text-2xl font-bold text-gray-900">
-                {selectedEmployee ? 'Modifier l\'employé' : 'Ajouter un employé'}
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full my-8">
+            <div className="p-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">
+                {editingEmployee ? 'Modifier l\'employé' : 'Nouvel employé'}
               </h2>
-            </div>
-
-            <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-              {/* Photo */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Photo de profil</label>
-                <div className="flex flex-col items-center gap-4">
-                  {photoPreview ? (
-                    <div className="relative">
-                      <img 
-                        src={photoPreview} 
-                        alt="Aperçu"
-                        className="w-32 h-32 rounded-full object-cover border-4 border-indigo-100"
+              
+              <form onSubmit={handleSubmit} className="space-y-6">
+                {/* Informations personnelles */}
+                <div className="border-b pb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <UsersIcon className="w-5 h-5" />
+                    Informations personnelles
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Prénom *</label>
+                      <input
+                        type="text"
+                        value={formData.first_name}
+                        onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
                       />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPhotoPreview(null)
-                          setPhotoFile(null)
-                          if (fileInputRef.current) fileInputRef.current.value = ''
-                        }}
-                        className="absolute -top-2 -right-2 p-1 bg-red-500 text-white rounded-full hover:bg-red-600"
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Nom *</label>
+                      <input
+                        type="text"
+                        value={formData.last_name}
+                        onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Matricule *</label>
+                      <input
+                        type="text"
+                        value={formData.employee_id}
+                        onChange={(e) => setFormData({ ...formData, employee_id: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Département</label>
+                      <input
+                        type="text"
+                        value={formData.department}
+                        onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Poste</label>
+                      <input
+                        type="text"
+                        value={formData.position}
+                        onChange={(e) => setFormData({ ...formData, position: e.target.value })}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Téléphone</label>
+                      <input
+                        type="tel"
+                        value={formData.phone}
+                        onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Informations contractuelles */}
+                <div className="border-b pb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <QrCodeIcon className="w-5 h-5" />
+                    Informations contractuelles
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Date d'embauche</label>
+                      <input
+                        type="date"
+                        value={formData.hire_date}
+                        onChange={(e) => setFormData({ ...formData, hire_date: e.target.value })}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Type de contrat</label>
+                      <select
+                        value={formData.contract_type}
+                        onChange={(e) => setFormData({ ...formData, contract_type: e.target.value })}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
                       >
-                        <X className="w-4 h-4" />
-                      </button>
+                        <option value="CDI">CDI (Contrat à Durée Indéterminée)</option>
+                        <option value="CDD">CDD (Contrat à Durée Déterminée)</option>
+                      </select>
                     </div>
-                  ) : (
-                    <div className="w-32 h-32 rounded-full bg-gray-100 flex items-center justify-center border-2 border-dashed border-gray-300">
-                      <User className="w-16 h-16 text-gray-400" />
+
+                    {formData.contract_type === 'CDD' && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Date de fin de contrat</label>
+                        <input
+                          type="date"
+                          value={formData.contract_end_date}
+                          onChange={(e) => setFormData({ ...formData, contract_end_date: e.target.value })}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Informations de paie */}
+                <div className="border-b pb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <DollarSign className="w-5 h-5" />
+                    Informations de paie
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Salaire mensuel net (MAD)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={formData.monthly_salary}
+                        onChange={(e) => setFormData({ ...formData, monthly_salary: e.target.value })}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                        placeholder="5000.00"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Taux horaire calculé automatiquement (base 191h/mois)
+                      </p>
                     </div>
-                  )}
-                  
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handlePhotoChange}
-                    className="hidden"
-                    id="photo-upload"
-                  />
-                  <label
-                    htmlFor="photo-upload"
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 transition cursor-pointer"
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Taux horaire supplémentaire (MAD/h)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={formData.overtime_rate}
+                        onChange={(e) => setFormData({ ...formData, overtime_rate: e.target.value })}
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                        placeholder="Auto (1.5x taux normal)"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Laissez vide pour 1.5x le taux normal
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowModal(false)
+                      setEditingEmployee(null)
+                    }}
+                    className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
                   >
-                    <Upload className="w-4 h-4" />
-                    {photoPreview ? 'Changer la photo' : 'Ajouter une photo'}
-                  </label>
-                  <p className="text-xs text-gray-500">JPG, PNG ou GIF (Max 5MB)</p>
+                    Annuler
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                  >
+                    {editingEmployee ? 'Mettre à jour' : 'Créer'}
+                  </button>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Prénom *</label>
-                  <input
-                    type="text"
-                    value={formData.first_name}
-                    onChange={(e) => setFormData({...formData, first_name: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Nom *</label>
-                  <input
-                    type="text"
-                    value={formData.last_name}
-                    onChange={(e) => setFormData({...formData, last_name: e.target.value})}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
-                <input
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({...formData, email: e.target.value})}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Département *</label>
-                <select
-                  value={formData.department}
-                  onChange={(e) => setFormData({...formData, department: e.target.value})}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                  required
-                >
-                  <option value="">Sélectionner...</option>
-                  <option value="Production">Production</option>
-                  <option value="Administration">Administration</option>
-                  <option value="Logistique">Logistique</option>
-                  <option value="Maintenance">Maintenance</option>
-                  <option value="Qualité">Qualité</option>
-                  <option value="Commercial">Commercial</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Matricule *</label>
-                <input
-                  type="text"
-                  value={formData.matricule}
-                  onChange={(e) => setFormData({...formData, matricule: e.target.value})}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 font-mono"
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="p-6 border-t border-gray-200 flex gap-3">
-              <button
-                onClick={() => setShowModal(false)}
-                disabled={uploading}
-                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition disabled:opacity-50"
-              >
-                Annuler
-              </button>
-              <button
-                onClick={handleSubmit}
-                disabled={uploading}
-                className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {uploading ? (
-                  <>
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    Upload...
-                  </>
-                ) : (
-                  selectedEmployee ? 'Modifier' : 'Ajouter'
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal QR Code */}
-      {showQRModal && selectedEmployee && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
-            <div className="p-6 border-b border-gray-200">
-              <h2 className="text-2xl font-bold text-gray-900">QR Code</h2>
-              <p className="text-sm text-gray-600 mt-1">
-                {selectedEmployee.first_name} {selectedEmployee.last_name}
-              </p>
-            </div>
-
-            <div className="p-8 flex flex-col items-center">
-              <div className="p-4 bg-white border-4 border-indigo-600 rounded-xl shadow-lg">
-                <QRCodeSVG
-                  id={`qr-large-${selectedEmployee.id}`}
-                  value={selectedEmployee.qr_code}
-                  size={250}
-                  level="H"
-                  includeMargin={true}
-                />
-              </div>
-              <p className="mt-4 text-sm text-gray-600 font-mono">{selectedEmployee.matricule}</p>
-            </div>
-
-            <div className="p-6 border-t border-gray-200 flex gap-3">
-              <button
-                onClick={() => setShowQRModal(false)}
-                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition"
-              >
-                Fermer
-              </button>
-              <button
-                onClick={() => downloadQRCode(selectedEmployee)}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
-              >
-                <Download className="w-4 h-4" />
-                Télécharger
-              </button>
+              </form>
             </div>
           </div>
         </div>
