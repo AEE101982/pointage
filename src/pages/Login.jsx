@@ -1,7 +1,14 @@
 import { useState } from 'react'
 import { supabase } from '../services/supabase'
 import { Lock, Mail } from 'lucide-react'
-import saharaLogo from '../assets/sahara-logo.png'
+
+// Import conditionnel du logo
+let saharaLogo
+try {
+  saharaLogo = new URL('../assets/sahara-logo.png', import.meta.url).href
+} catch (e) {
+  saharaLogo = null
+}
 
 export default function Login({ onLogin }) {
   const [email, setEmail] = useState('')
@@ -23,18 +30,17 @@ export default function Login({ onLogin }) {
       if (authError) throw authError
 
       if (data.user) {
-        // Vérifier si l'utilisateur existe dans la table users
-        const { data: userData } = await supabase
+        const { data: userData, error: userError } = await supabase
           .from('users')
           .select('*')
           .eq('id', data.user.id)
           .single()
 
-        if (userData) {
-          onLogin(userData)
-        } else {
+        if (userError || !userData) {
           throw new Error('Utilisateur non autorisé')
         }
+
+        onLogin(userData)
       }
     } catch (err) {
       console.error('Erreur login:', err)
@@ -52,11 +58,22 @@ export default function Login({ onLogin }) {
         {/* Logo Sahara Mobilier */}
         <div className="text-center mb-8">
           <div className="flex justify-center mb-6">
-            <img 
-              src={saharaLogo} 
-              alt="Logo Sahara Mobilier"
-              className="w-32 h-32 rounded-full shadow-lg object-contain bg-white p-2"
-            />
+            {saharaLogo ? (
+              // Si le logo existe, l'afficher
+              <img 
+                src={saharaLogo} 
+                alt="Logo Sahara Mobilier"
+                className="w-32 h-32 rounded-full shadow-lg object-contain bg-white p-2"
+              />
+            ) : (
+              // Sinon, afficher un logo par défaut avec initiales
+              <div className="w-32 h-32 rounded-full shadow-lg bg-gradient-to-br from-red-800 to-red-900 flex items-center justify-center">
+                <div className="text-center">
+                  <div className="text-4xl font-bold text-white">SM</div>
+                  <div className="text-xs text-red-100 mt-1">USINE</div>
+                </div>
+              </div>
+            )}
           </div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">
             Système de Gestion RH
