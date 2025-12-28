@@ -5,6 +5,7 @@ import {
   QrCode, 
   Users, 
   FileText, 
+  Calendar,  // ✅ AJOUTÉ pour Rapports Mensuels
   UserCog, 
   LogOut, 
   Settings as SettingsIcon,
@@ -28,6 +29,7 @@ export default function Layout() {
     { path: '/scan', icon: QrCode, label: 'Scanner' },
     { path: '/employees', icon: Users, label: 'Employés' },
     { path: '/reports', icon: FileText, label: 'Rapports' },
+    { path: '/monthly-reports', icon: Calendar, label: 'Rapports Mensuels' },  // ✅ AJOUTÉ
     ...(role === 'admin' ? [
       { path: '/users', icon: UserCog, label: 'Utilisateurs' },
       { path: '/settings', icon: SettingsIcon, label: 'Paramètres' }
